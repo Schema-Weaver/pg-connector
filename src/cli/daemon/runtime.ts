@@ -147,9 +147,13 @@ export async function runAgent(opts: RuntimeOptions): Promise<number> {
   const canceller = new Canceller();
   const introspector = new Introspector({ poolManager });
   
-  const lookupDb = (project: string): DbEntry | null => {
-    const db = currentDatabasesConfig.databases.find(d => d.project_name === project);
-    return db || null;
+  const lookupDb = (project: string, alias?: string): DbEntry | null => {
+    const byProject = currentDatabasesConfig.databases.find(d => d.project_name === project);
+    if (byProject) return byProject;
+    // Protocol also addresses DBs by db_alias. Fall back so relay clients that
+    // only know the alias (e.g. the Data Explorer relay) still resolve.
+    if (alias) return currentDatabasesConfig.databases.find(d => d.db_alias === alias) || null;
+    return null;
   };
   
   const dispatcher = new Dispatcher({
@@ -168,6 +172,11 @@ export async function runAgent(opts: RuntimeOptions): Promise<number> {
   
   session = new AgentSession({
     machineConfig: opts.machineConfig,
+    getDatabases: () =>
+      currentDatabasesConfig.databases.map((db) => ({
+        db_alias: db.db_alias,
+        database: db.database,
+      })),
     onMessage: async (msg) => {
       try {
         await dispatcher.handle(msg);

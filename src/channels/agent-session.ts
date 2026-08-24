@@ -15,6 +15,8 @@ import { MachineConfig } from '../config/machine-config';
 export interface AgentSessionOptions {
   /** Machine config (loaded by caller). */
   machineConfig: MachineConfig;
+  /** Optional: returns configured database list from databases.config.json. */
+  getDatabases?: () => Array<{ db_alias: string; database: string }>;
   /** Message handler. Called for every incoming message on the data channel. */
   onMessage: MessageHandler;
   /** State change handler. Called whenever AgentSessionState changes. */
@@ -71,6 +73,7 @@ export class AgentSession {
       cloudUrl: this.opts.machineConfig.cloud_url,
       token: this.opts.machineConfig.agent_token,
       agentId: this.opts.machineConfig.agent_id,
+      getDatabases: this.opts.getDatabases,
       onWake: (event) => this.handleWakeEvent(event),
       onStateChange: (wakeState, error) => {
         this.updateState({

@@ -65,7 +65,8 @@ export class DataChannel {
     targetUrl = targetUrl.replace(/\/+$/, '') + '/api/agent/data';
 
     const url = new URL(targetUrl);
-    url.searchParams.set('token', this.opts.dataChannelToken);
+    // Token is sent exclusively via the Authorization header (not in query
+    // params) to avoid leaking short-lived tokens in proxy/CDN access logs.
     url.searchParams.set('agent_id', this.opts.agentId);
     url.searchParams.set('session', this.opts.browserSessionId);
 

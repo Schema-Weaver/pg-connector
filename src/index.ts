@@ -78,3 +78,6 @@ export {
 export {
   ActionRequest, PermissionDecision, AutoUpgradeResult, ManualApprovalResult,
 } from './permissions/types';
+
+// Audit (Part 7)
+export * from './audit';

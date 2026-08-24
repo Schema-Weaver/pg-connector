@@ -1,3 +1,9 @@
+/**
+ * @roadmap Cloud project metadata — planned for v0.3.0.
+ * Currently functional for locally configured DB entries. Does not yet
+ * fetch project metadata, team members, or migration history from the
+ * Schema Weaver cloud API.
+ */
 import * as path from 'path';
 import { findDbByProject, loadDbConfig } from '../../config/db-config';
 import { getSwAgentDir } from '../../config/paths';

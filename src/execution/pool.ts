@@ -24,6 +24,25 @@ export interface PoolManagerOptions {
   maxPoolSize?: number;
 }
 
+/**
+ * Build node-postgres SSL options from a DbEntry's ssl settings.
+ * Shared by PoolManager and Canceller so ad-hoc connections (e.g. cancel
+ * backends) negotiate TLS exactly like pooled ones.
+ */
+export function buildSslConfig(
+  mode: string,
+  rootCert?: string | null
+): boolean | { ca: Buffer; rejectUnauthorized: boolean } {
+  if (mode === 'require') return { ca: undefined as unknown as Buffer, rejectUnauthorized: false };
+  if (mode === 'verify-ca' || mode === 'verify-full') {
+    if (!rootCert) {
+      throw new Error('ssl_root_cert required for ' + mode);
+    }
+    return { ca: fs.readFileSync(rootCert), rejectUnauthorized: true };
+  }
+  return false; // 'disable' (and unknown modes) → no TLS
+}
+
 export class PoolManager {
   private pools: Map<string, { pool: Pool; idleSince: number; idleTimer?: NodeJS.Timeout }> = new Map();
   private activeClientsCount: Map<string, number> = new Map();
@@ -56,7 +75,7 @@ export class PoolManager {
 
       let sslConfig: boolean | { ca: Buffer; rejectUnauthorized: boolean };
       try {
-        sslConfig = this.sslConfigFromMode(dbEntry.ssl_mode, dbEntry.ssl_root_cert);
+        sslConfig = buildSslConfig(dbEntry.ssl_mode, dbEntry.ssl_root_cert);
       } catch (err: unknown) {
         throw new PoolError(
           'ssl_error',
@@ -234,18 +253,5 @@ export class PoolManager {
         waiting_count: record.pool.waitingCount,
       };
     });
-  }
-
-  private sslConfigFromMode(mode: string, rootCert?: string | null): boolean | { ca: Buffer; rejectUnauthorized: boolean } {
-    if (mode === 'disable') return false;
-    if (mode === 'require') return { ca: undefined as unknown as Buffer, rejectUnauthorized: false };
-    if (mode === 'verify-ca' || mode === 'verify-full') {
-      if (!rootCert) {
-        throw new Error('ssl_root_cert required for ' + mode);
-      }
-      const ca = fs.readFileSync(rootCert);
-      return { ca, rejectUnauthorized: true };
-    }
-    return false;
   }
 }

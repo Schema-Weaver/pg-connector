@@ -1,3 +1,8 @@
+/**
+ * @roadmap Cloud project pairing — planned for v0.3.0.
+ * Currently a stub that prints the agent ID and a message directing users
+ * to manual IDE pairing via `config show --token`.
+ */
 import { loadMachineConfig } from '../../config/machine-config';
 import { closePrompts, isReplMode } from '../prompt';
 import { C, S } from '../ui';

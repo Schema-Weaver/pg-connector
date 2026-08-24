@@ -1,11 +1,11 @@
-# @vivekmind/sw-agent
+# pg-connector
 
 > **Bridge between the Schema Weaver browser IDE and your PostgreSQL databases.**
 > Runs near the DB. Never exposes credentials. Executes queries and migrations on demand.
 
-[![npm version](https://img.shields.io/npm/v/@vivekmind/sw-agent.svg)](https://www.npmjs.com/package/@vivekmind/sw-agent)
-[![license](https://img.shields.io/npm/l/@vivekmind/sw-agent.svg)](./LICENSE)
-[![node version](https://img.shields.io/node/v/@vivekmind/sw-agent.svg)](https://nodejs.org)
+[![npm version](https://img.shields.io/npm/v/pg-connector.svg)](https://www.npmjs.com/package/pg-connector)
+[![license](https://img.shields.io/npm/l/pg-connector.svg)](./LICENSE)
+[![node version](https://img.shields.io/node/v/pg-connector.svg)](https://nodejs.org)
 
 ## What is Schema Weaver?
 
@@ -53,16 +53,51 @@ The agent connects **outbound** to the cloud gateway — no inbound firewall cha
 ### As a CLI (run the agent daemon)
 
 ```bash
-npm install -g @vivekmind/sw-agent
+npm install -g pg-connector
 
 # Or use without installing:
-npx @vivekmind/sw-agent init
+npx pg-connector init
 ```
 
 ### As a library (programmatic API)
 
 ```bash
-npm install @vivekmind/sw-agent
+npm install pg-connector
+```
+
+### On EC2 / Ubuntu / VPC (Linux)
+
+```bash
+# Install globally
+sudo npm install -g pg-connector
+
+# Initialize
+schemaweaver init
+
+# Add your database
+schemaweaver db add
+
+# Start as foreground process
+schemaweaver agent start
+
+# Or generate a systemd service for 24/7 background operation
+node $(npm root -g)/pg-connector/scripts/generate-systemd-service.mjs \
+  --user ubuntu --output ./schemaweaver.service
+sudo cp schemaweaver.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now schemaweaver
+```
+
+> **CLI aliases**: After global install, you can use any of: `schemaweaver`, `sw-agent`, `pg-connector`, or `db-connector`.
+
+### Migrating from `@vivekmind/sw-agent`
+
+```bash
+# Uninstall old package
+npm uninstall -g @vivekmind/sw-agent
+
+# Install new package (config in ~/.sw-agent is preserved)
+npm install -g pg-connector
 ```
 
 ## Quick Start (CLI)
@@ -149,7 +184,7 @@ sw-agent agent status
 ## Quick Start (Programmatic)
 
 ```typescript
-import { AgentClient } from '@vivekmind/sw-agent';
+import { AgentClient } from 'pg-connector';
 
 const client = new AgentClient({
   relayUrl: 'wss://www.worker-pod.io',
@@ -350,39 +385,39 @@ TEST_PG_URL=postgresql://localhost:5432/test npm run test:e2e
 
 ## API Exports
 
-### `@vivekmind/sw-agent` (Client SDK)
+### `pg-connector` (Client SDK)
 
 Browser-safe exports for connecting to agents:
 
 ```typescript
-export { AgentClient } from '@vivekmind/sw-agent';
-export { AgentClientError, AgentClientTimeoutError, AgentClientDisconnectedError } from '@vivekmind/sw-agent';
-export { MessageType, ErrorCode } from '@vivekmind/sw-agent';
+export { AgentClient } from 'pg-connector';
+export { AgentClientError, AgentClientTimeoutError, AgentClientDisconnectedError } from 'pg-connector';
+export { MessageType, ErrorCode } from 'pg-connector';
 ```
 
-### `@vivekmind/sw-agent` (Server Runtime)
+### `pg-connector` (Server Runtime)
 
 Full exports including PostgreSQL execution:
 
 ```typescript
 // Config
-export { loadMachineConfig, saveMachineConfig } from '@vivekmind/sw-agent';
-export { loadDatabaseConfig, saveDatabaseConfig, getDatabase } from '@vivekmind/sw-agent';
+export { loadMachineConfig, saveMachineConfig } from 'pg-connector';
+export { loadDatabaseConfig, saveDatabaseConfig, getDatabase } from 'pg-connector';
 
 // Protocol
-export { MessageType, ErrorCode, createMessage, serialize, deserialize } from '@vivekmind/sw-agent';
+export { MessageType, ErrorCode, createMessage, serialize, deserialize } from 'pg-connector';
 
 // Execution
-export { PoolManager, QueryRunner, MigrationRunner, Introspector, Canceller } from '@vivekmind/sw-agent';
+export { PoolManager, QueryRunner, MigrationRunner, Introspector, Canceller } from 'pg-connector';
 
 // Permissions
-export { PermissionChecker, AutoUpgradeChecker, ManualApprovalHandler, PlanRegistry } from '@vivekmind/sw-agent';
+export { PermissionChecker, AutoUpgradeChecker, ManualApprovalHandler, PlanRegistry } from 'pg-connector';
 
 // Audit
-export { AuditSink, LocalAuditWriter, CloudAuditWriter, verifyChain } from '@vivekmind/sw-agent';
+export { AuditSink, LocalAuditWriter, CloudAuditWriter, verifyChain } from 'pg-connector';
 
 // Channels
-export { AgentSession, WakeChannel, DataChannel } from '@vivekmind/sw-agent';
+export { AgentSession, WakeChannel, DataChannel } from 'pg-connector';
 ```
 
 ## Test Coverage
@@ -394,7 +429,9 @@ export { AgentSession, WakeChannel, DataChannel } from '@vivekmind/sw-agent';
 ## Related
 
 - [Schema Weaver](https://schemaweaver.vivekmind.com) — Main product
-- [GitHub](https://github.com/vivekmind/sw-agent) — Source code
+- [GitHub](https://github.com/Schema-Weaver/sw-agent) — Source code
+- [Security Policy](./SECURITY.md) — Vulnerability disclosure & threat model
+- [Code of Conduct](./CODE_OF_CONDUCT.md) — Community guidelines
 
 ## License
 

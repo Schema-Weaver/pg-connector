@@ -1,7 +1,7 @@
 import { Client, PoolClient } from 'pg';
 import { DbEntry } from '../config/db-config';
 import { InFlightRequest } from './types';
-import { PoolManager } from './pool';
+import { PoolManager, buildSslConfig } from './pool';
 
 export interface CancellerOptions {
   /** Optional: reuse pool manager for the cancel connection. */
@@ -65,6 +65,14 @@ export class Canceller {
     }
 
     if (!client) {
+      // Mirror the pool's TLS negotiation — without this, cancellation fails
+      // against verify-ca/verify-full databases that reject plaintext.
+      let sslConfig: boolean | { ca: Buffer; rejectUnauthorized: boolean };
+      try {
+        sslConfig = buildSslConfig(dbEntry.ssl_mode, dbEntry.ssl_root_cert);
+      } catch {
+        sslConfig = false; // cancel is best-effort; never block on cert load
+      }
       const password = dbEntry.password_stored || (dbEntry.password_env ? process.env[dbEntry.password_env] : '') || '';
       const c = new Client({
         host: dbEntry.host,
@@ -72,6 +80,7 @@ export class Canceller {
         database: dbEntry.database,
         user: dbEntry.user,
         password: password,
+        ssl: sslConfig,
       });
       await c.connect();
       client = c;

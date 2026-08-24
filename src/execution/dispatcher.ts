@@ -34,8 +34,8 @@ export interface DispatcherOptions {
   introspector: Introspector;
   permissionChecker: PermissionChecker;
   planRegistry: PlanRegistry;
-  /** Look up DB entry by project name (one DB per project). */
-  lookupDb: (project: string) => DbEntry | null;
+  /** Look up DB entry by project name (one DB per project), falling back to db_alias. */
+  lookupDb: (project: string, alias?: string) => DbEntry | null;
   /** Look up machine config (for default permission). */
   getMachineConfig: () => MachineConfig;
   /** Send a message back to the browser. */
@@ -106,7 +106,7 @@ export class Dispatcher {
   }
 
   async handle(msg: AgentMessage): Promise<void> {
-    const dbEntry = this.opts.lookupDb(msg.project);
+    const dbEntry = this.opts.lookupDb(msg.project, msg.db_alias);
     const abortController = new AbortController();
     const startTime = Date.now();
 
@@ -161,7 +161,7 @@ export class Dispatcher {
           return this.sendError(msg, 'cancel_target_not_found', `No in-flight request matches the target_id.`);
         }
 
-        const targetDbEntry = this.opts.lookupDb(targetReq.message?.project || msg.project);
+        const targetDbEntry = this.opts.lookupDb(targetReq.message?.project || msg.project, targetReq.message?.db_alias || msg.db_alias);
         if (!targetDbEntry) {
           throw new PoolError('connection_failed', 'Project database configuration not found.');
         }

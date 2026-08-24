@@ -13,6 +13,8 @@ export interface WakeChannelOptions {
   token: string;
   /** Agent ID (sent as X-Agent-Id header for routing). */
   agentId: string;
+  /** Optional: returns configured database list from databases.config.json. */
+  getDatabases?: () => Array<{ db_alias: string; database: string }>;
   /** Called when a wake event arrives. */
   onWake: (event: WakeEvent) => void;
   /** Called when channel state changes. */
@@ -248,6 +250,15 @@ export class WakeChannel {
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
       };
+
+      if (this.opts.getDatabases) {
+        try {
+          const dbs = this.opts.getDatabases();
+          if (Array.isArray(dbs) && dbs.length > 0) {
+            headers['X-Agent-Databases'] = JSON.stringify(dbs);
+          }
+        } catch (_) {}
+      }
 
       const reqOpts: http.RequestOptions = {
         method: 'GET',

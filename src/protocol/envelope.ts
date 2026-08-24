@@ -52,6 +52,9 @@ export interface AgentMessage<T = unknown> {
   user: {
     id: string;
     role: Role;
+    /** Actual human initiator when the request is relayed for a team-shared
+     *  agent (equals id when the owner sends it). Optional; informational. */
+    actor_id?: string;
   };
 
   /** DB alias. Must match a db_alias in databases.config.json. */
