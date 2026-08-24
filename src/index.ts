@@ -1,4 +1,4 @@
-export const VERSION = '0.1.2';
+export const VERSION = '0.1.3';
 
 // Config (from Part 2)
 export * from './config/machine-config';
