@@ -429,7 +429,7 @@ export { AgentSession, WakeChannel, DataChannel } from 'pg-connector';
 ## Related
 
 - [Schema Weaver](https://schemaweaver.vivekmind.com) — Main product
-- [GitHub](https://github.com/Schema-Weaver/sw-agent) — Source code
+- [GitHub](https://github.com/Schema-Weaver/pg-connector) — Source code
 - [Security Policy](./SECURITY.md) — Vulnerability disclosure & threat model
 - [Code of Conduct](./CODE_OF_CONDUCT.md) — Community guidelines
 
