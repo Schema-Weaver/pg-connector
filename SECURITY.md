@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in `pg-connector`, please
+If you discover a security vulnerability in `@vivekmind/pg-connector`, please
 report it responsibly:
 
 **Email**: security@schemaweaver.vivekmind.com
@@ -29,7 +29,7 @@ resolve the issue before any public disclosure.
 
 ### Threat Model
 
-`pg-connector` (formerly `sw-agent`) is a daemon that bridges the
+`@vivekmind/pg-connector` (formerly `sw-agent`) is a daemon that bridges the
 Schema Weaver browser IDE to PostgreSQL databases. Its security design is based
 on a **zero-trust, outbound-only, least-privilege** model:
 

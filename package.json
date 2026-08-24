@@ -1,6 +1,6 @@
 {
-  "name": "pg-connector",
-  "version": "0.1.3",
+  "name": "@vivekmind/pg-connector",
+  "version": "0.1.0",
   "description": "Bridge between the Schema Weaver browser IDE and your PostgreSQL databases. Runs near the DB, never exposes credentials, executes queries and migrations on demand.",
   "license": "MIT",
   "author": "Schema Weaver <hello@schemaweaver.com>",
@@ -31,10 +31,13 @@
   "types": "./dist/types/index.d.ts",
   "sideEffects": false,
   "bin": {
-    "schemaweaver": "dist/cjs/cli/index.js",
-    "sw-agent": "dist/cjs/cli/index.js",
-    "pg-connector": "dist/cjs/cli/index.js",
-    "db-connector": "dist/cjs/cli/index.js"
+    "schemaweaver": "./dist/cjs/cli/index.js",
+    "sw-agent": "./dist/cjs/cli/index.js",
+    "pg-connector": "./dist/cjs/cli/index.js",
+    "db-connector": "./dist/cjs/cli/index.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "exports": {
     ".": {

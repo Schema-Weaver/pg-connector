@@ -1,11 +1,11 @@
-# pg-connector
+# @vivekmind/pg-connector
 
 > **Bridge between the Schema Weaver browser IDE and your PostgreSQL databases.**
 > Runs near the DB. Never exposes credentials. Executes queries and migrations on demand.
 
-[![npm version](https://img.shields.io/npm/v/pg-connector.svg)](https://www.npmjs.com/package/pg-connector)
-[![license](https://img.shields.io/npm/l/pg-connector.svg)](./LICENSE)
-[![node version](https://img.shields.io/node/v/pg-connector.svg)](https://nodejs.org)
+[![npm version](https://img.shields.io/npm/v/@vivekmind/pg-connector.svg)](https://www.npmjs.com/package/@vivekmind/pg-connector)
+[![license](https://img.shields.io/npm/l/@vivekmind/pg-connector.svg)](./LICENSE)
+[![node version](https://img.shields.io/node/v/@vivekmind/pg-connector.svg)](https://nodejs.org)
 
 ## What is Schema Weaver?
 
@@ -53,23 +53,23 @@ The agent connects **outbound** to the cloud gateway — no inbound firewall cha
 ### As a CLI (run the agent daemon)
 
 ```bash
-npm install -g pg-connector
+npm install -g @vivekmind/pg-connector
 
 # Or use without installing:
-npx pg-connector init
+npx @vivekmind/pg-connector init
 ```
 
 ### As a library (programmatic API)
 
 ```bash
-npm install pg-connector
+npm install @vivekmind/pg-connector
 ```
 
 ### On EC2 / Ubuntu / VPC (Linux)
 
 ```bash
 # Install globally
-sudo npm install -g pg-connector
+sudo npm install -g @vivekmind/pg-connector
 
 # Initialize
 schemaweaver init
@@ -81,14 +81,14 @@ schemaweaver db add
 schemaweaver agent start
 
 # Or generate a systemd service for 24/7 background operation
-node $(npm root -g)/pg-connector/scripts/generate-systemd-service.mjs \
+node $(npm root -g)/@vivekmind/pg-connector/scripts/generate-systemd-service.mjs \
   --user ubuntu --output ./schemaweaver.service
 sudo cp schemaweaver.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now schemaweaver
 ```
 
-> **CLI aliases**: After global install, you can use any of: `schemaweaver`, `sw-agent`, `pg-connector`, or `db-connector`.
+> **CLI aliases**: After global install, you can use any of: `schemaweaver`, `sw-agent`, `@vivekmind/pg-connector`, or `db-connector`.
 
 ### Migrating from `@vivekmind/sw-agent`
 
@@ -97,7 +97,7 @@ sudo systemctl enable --now schemaweaver
 npm uninstall -g @vivekmind/sw-agent
 
 # Install new package (config in ~/.sw-agent is preserved)
-npm install -g pg-connector
+npm install -g @vivekmind/pg-connector
 ```
 
 ## Quick Start (CLI)
@@ -184,7 +184,7 @@ sw-agent agent status
 ## Quick Start (Programmatic)
 
 ```typescript
-import { AgentClient } from 'pg-connector';
+import { AgentClient } from '@vivekmind/pg-connector';
 
 const client = new AgentClient({
   relayUrl: 'wss://www.worker-pod.io',
@@ -385,39 +385,39 @@ TEST_PG_URL=postgresql://localhost:5432/test npm run test:e2e
 
 ## API Exports
 
-### `pg-connector` (Client SDK)
+### `@vivekmind/pg-connector` (Client SDK)
 
 Browser-safe exports for connecting to agents:
 
 ```typescript
-export { AgentClient } from 'pg-connector';
-export { AgentClientError, AgentClientTimeoutError, AgentClientDisconnectedError } from 'pg-connector';
-export { MessageType, ErrorCode } from 'pg-connector';
+export { AgentClient } from '@vivekmind/pg-connector';
+export { AgentClientError, AgentClientTimeoutError, AgentClientDisconnectedError } from '@vivekmind/pg-connector';
+export { MessageType, ErrorCode } from '@vivekmind/pg-connector';
 ```
 
-### `pg-connector` (Server Runtime)
+### `@vivekmind/pg-connector` (Server Runtime)
 
 Full exports including PostgreSQL execution:
 
 ```typescript
 // Config
-export { loadMachineConfig, saveMachineConfig } from 'pg-connector';
-export { loadDatabaseConfig, saveDatabaseConfig, getDatabase } from 'pg-connector';
+export { loadMachineConfig, saveMachineConfig } from '@vivekmind/pg-connector';
+export { loadDatabaseConfig, saveDatabaseConfig, getDatabase } from '@vivekmind/pg-connector';
 
 // Protocol
-export { MessageType, ErrorCode, createMessage, serialize, deserialize } from 'pg-connector';
+export { MessageType, ErrorCode, createMessage, serialize, deserialize } from '@vivekmind/pg-connector';
 
 // Execution
-export { PoolManager, QueryRunner, MigrationRunner, Introspector, Canceller } from 'pg-connector';
+export { PoolManager, QueryRunner, MigrationRunner, Introspector, Canceller } from '@vivekmind/pg-connector';
 
 // Permissions
-export { PermissionChecker, AutoUpgradeChecker, ManualApprovalHandler, PlanRegistry } from 'pg-connector';
+export { PermissionChecker, AutoUpgradeChecker, ManualApprovalHandler, PlanRegistry } from '@vivekmind/pg-connector';
 
 // Audit
-export { AuditSink, LocalAuditWriter, CloudAuditWriter, verifyChain } from 'pg-connector';
+export { AuditSink, LocalAuditWriter, CloudAuditWriter, verifyChain } from '@vivekmind/pg-connector';
 
 // Channels
-export { AgentSession, WakeChannel, DataChannel } from 'pg-connector';
+export { AgentSession, WakeChannel, DataChannel } from '@vivekmind/pg-connector';
 ```
 
 ## Test Coverage
@@ -429,7 +429,7 @@ export { AgentSession, WakeChannel, DataChannel } from 'pg-connector';
 ## Related
 
 - [Schema Weaver](https://schemaweaver.vivekmind.com) — Main product
-- [GitHub](https://github.com/Schema-Weaver/pg-connector) — Source code
+- [GitHub](https://github.com/Schema-Weaver/@vivekmind/pg-connector) — Source code
 - [Security Policy](./SECURITY.md) — Vulnerability disclosure & threat model
 - [Code of Conduct](./CODE_OF_CONDUCT.md) — Community guidelines
 
