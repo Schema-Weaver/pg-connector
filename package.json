@@ -1,0 +1,101 @@
+{
+  "name": "@schema-weaver/pg-connector",
+  "version": "0.1.0",
+  "description": "Bridge between the Schema Weaver browser IDE and your PostgreSQL databases. Runs near the DB, never exposes credentials, executes queries and migrations on demand.",
+  "license": "MIT",
+  "author": "Schema Weaver <vivek@schemaweaver.dev>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Schema-Weaver/pg-connector.git"
+  },
+  "homepage": "https://schemaweaver.dev",
+  "bugs": {
+    "url": "https://github.com/Schema-Weaver/pg-connector/issues"
+  },
+  "keywords": [
+    "postgresql",
+    "postgres",
+    "database",
+    "schema",
+    "migration",
+    "agent",
+    "bridge",
+    "tunnel",
+    "ide",
+    "ddl",
+    "schema-weaver",
+    "devtools"
+  ],
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "sideEffects": false,
+  "bin": {
+    "schemaweaver": "./dist/cjs/cli/index.js",
+    "sw-agent": "./dist/cjs/cli/index.js",
+    "pg-connector": "./dist/cjs/cli/index.js",
+    "db-connector": "./dist/cjs/cli/index.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "npm run build:clean && npm run build:cjs && npm run build:esm && npm run build:types && npm run postbuild",
+    "build:clean": "rimraf dist",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "build:esm": "tsc -p tsconfig.esm.json",
+    "build:types": "tsc -p tsconfig.types.json",
+    "dev": "tsx watch src/cli/index.ts",
+    "lint": "eslint \"src/**/*.ts\"",
+    "lint:fix": "eslint \"src/**/*.ts\" --fix",
+    "format": "prettier --write 'src/**/*.ts'",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --import tsx src/tests/**/*.test.ts",
+    "test:protocol": "node --test --import tsx src/tests/protocol/**/*.test.ts",
+    "test:channels": "node --test --import tsx src/tests/channels/**/*.test.ts",
+    "test:execution": "node --test --import tsx src/tests/execution/**/*.test.ts",
+    "test:permissions": "node --test --import tsx src/tests/permissions/**/*.test.ts",
+    "test:audit": "node --test --import tsx src/tests/audit/**/*.test.ts",
+    "test:e2e": "node --test --test-concurrency=1 --import tsx src/tests/e2e/**/*.test.ts",
+    "test:e2e:docker": "node --test --test-concurrency=1 --import tsx src/tests/e2e/**/*.test.ts",
+    "test:all": "npm test && npm run test:e2e",
+    "build:dev": "tsc -p tsconfig.dev.json",
+    "postbuild": "node scripts/postbuild.mjs",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@inquirer/core": "^11.2.1",
+    "@inquirer/prompts": "^8.5.2",
+    "pg": "^8.21.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "@types/pg": "^8.20.0",
+    "@types/ws": "^8.18.1",
+    "@typescript-eslint/eslint-plugin": "^8.61.1",
+    "@typescript-eslint/parser": "^8.61.1",
+    "eslint": "^8.57.1",
+    "prettier": "^3.8.4",
+    "rimraf": "^6.1.3",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  }
+}

@@ -1,0 +1,10 @@
+# Force LF line endings for all text files to prevent CRLF issues on Linux/EC2
+* text=auto eol=lf
+*.ts text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
