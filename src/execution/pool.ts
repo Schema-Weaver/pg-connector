@@ -211,6 +211,30 @@ export function hostnameVerificationWarning(
 }
 
 /**
+ * The two non-verifying ssl modes are silent today, which is how a
+ * cleartext-password or MITM-able posture goes unnoticed. `require` is the
+ * default in `db add`, so this is the warning most users actually need.
+ */
+export function unauthenticatedTlsWarning(mode: string): string | null {
+  if (mode === 'require') {
+    return (
+      `ssl_mode is 'require' (the default): the tunnel is encrypted but the server ` +
+      'certificate is NOT verified, so an on-path attacker can impersonate your ' +
+      'PostgreSQL server. Upgrade with: sw-agent db edit <alias> --ssl verify-full ' +
+      '--ssl-cert <ca.pem>'
+    );
+  }
+  if (mode === 'disable') {
+    return (
+      "ssl_mode is 'disable': the connection is unencrypted and the database " +
+      'password travels in cleartext. Upgrade with: sw-agent db edit <alias> ' +
+      '--ssl verify-full --ssl-cert <ca.pem>'
+    );
+  }
+  return null;
+}
+
+/**
  * Build node-postgres SSL options from a DbEntry's ssl settings.
  *
  * `verify-ca` and `verify-full` are genuinely different here: `verify-ca`
@@ -226,9 +250,12 @@ export function buildSslConfig(
   rootCert?: string | null,
   host?: string | null,
 ): PoolSslConfig {
-  const warning = hostnameVerificationWarning(mode, host);
-  if (warning) {
-    console.warn(`[sw-agent] WARNING: ${warning}`);
+  const warnings = [
+    hostnameVerificationWarning(mode, host),
+    unauthenticatedTlsWarning(mode),
+  ].filter((w): w is string => typeof w === 'string' && w.length > 0);
+  if (warnings.length > 0) {
+    console.warn(`[sw-agent] WARNING: ${warnings.join(' ')}`);
   }
 
   switch (mode) {
