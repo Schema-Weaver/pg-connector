@@ -1,35 +1,80 @@
-import { PROTOCOL_VERSION } from './constants';
+import { ENVELOPE_MAC_KDF, ENVELOPE_NONCE_PATTERN, LIMITS, PROTOCOL_VERSION } from './constants';
 import * as crypto from 'crypto';
 
 export const PROTOCOL_VERSION_V1 = PROTOCOL_VERSION;
 
 export type ProtocolVersion = typeof PROTOCOL_VERSION;
 
-export type Role = 'admin' | 'developer' | 'data_reader' | 'viewer';
+/**
+ * Canonical list of RBAC roles. The `Role` type is derived from this tuple so
+ * the runtime allow-list and the compile-time union cannot drift apart.
+ */
+export const ROLES = ['admin', 'developer', 'data_reader', 'viewer'] as const;
 
-export type MessageType =
-  | 'ping'
-  | 'introspect'
-  | 'query'
-  | 'stream_query'
-  | 'migration_run'
-  | 'cancel'
-  | 'response'
-  | 'error'
-  | 'stream_chunk'
-  | 'stream_end'
-  | 'event';
+export type Role = (typeof ROLES)[number];
 
-export type EventKind =
-  | 'status_change'
-  | 'migration_progress'
-  | 'approval_required'
-  | 'approval_response'
-  | 'warning'
-  | 'resume_request'
-  | 'plan_register';
+export function isRole(value: unknown): value is Role {
+  return typeof value === 'string' && (ROLES as readonly string[]).includes(value);
+}
+
+/**
+ * Canonical list of message types. `MessageType` is derived from this tuple;
+ * `validateEnvelope` gates on the same array.
+ */
+export const MESSAGE_TYPES = [
+  'ping',
+  'introspect',
+  'query',
+  'stream_query',
+  'migration_run',
+  'cancel',
+  'response',
+  'error',
+  'stream_chunk',
+  'stream_end',
+  'event',
+] as const;
+
+export type MessageType = (typeof MESSAGE_TYPES)[number];
+
+/**
+ * Canonical list of event kinds. `EventKind` is derived from this tuple, so an
+ * event kind that is not in this array cannot be validated and an array entry
+ * that is not a legal kind is a compile error.
+ */
+export const EVENT_KINDS = [
+  'status_change',
+  'migration_progress',
+  'approval_required',
+  'approval_response',
+  'warning',
+  'resume_request',
+  'plan_register',
+] as const;
+
+export type EventKind = (typeof EVENT_KINDS)[number];
 
 export type MigrationStatementStatus = 'pending' | 'running' | 'success' | 'failed' | 'rolled_back';
+
+/**
+ * The security-relevant envelope fields covered by the per-session MAC, in
+ * canonical (sorted) order: db_alias, id, nonce, payload, project, ts, type, user, v.
+ *
+ * `canonicalEnvelopeJson` in fact covers *every* top-level field except `mac`,
+ * so a relay cannot smuggle an unsigned field past verification; this constant
+ * documents the minimum contract a compatible implementation must satisfy.
+ */
+export const MAC_SIGNED_ENVELOPE_FIELDS = [
+  'v',
+  'id',
+  'type',
+  'project',
+  'user',
+  'db_alias',
+  'ts',
+  'nonce',
+  'payload',
+] as const;
 
 /**
  * Single envelope format for every message between browser <-> cloud <-> agent.
@@ -48,7 +93,16 @@ export interface AgentMessage<T = unknown> {
   /** Project name. Must match a project_name in databases.config.json. */
   project: string;
 
-  /** Acting user. Comes from browser session, never trusted blindly — agent verifies via cloud. */
+  /**
+   * Acting user, as asserted by the relay.
+   *
+   * This is a CLAIM, not a verified fact: nothing in a self-declared `role` is
+   * trustworthy on its own. It is only acted upon after
+   * `InboundEnvelopeGuard` (protocol/validate.ts) has verified the per-session
+   * MAC over this whole envelope, checked `ts` freshness, rejected a replayed
+   * `nonce`, and confirmed `role` is one of the roles the cloud negotiated when
+   * this data-channel session was created.
+   */
   user: {
     id: string;
     role: Role;
@@ -63,9 +117,241 @@ export interface AgentMessage<T = unknown> {
   /** Epoch milliseconds. Sender's clock. Used for audit + ordering. */
   ts: number;
 
+  /**
+   * Anti-replay nonce, unique per message within a data-channel session.
+   * Required on every inbound envelope (see InboundEnvelopeGuard). Optional on
+   * outbound envelopes, which the agent does not sign: it holds no key the relay
+   * could verify with.
+   */
+  nonce?: string;
+
+  /**
+   * `HMAC-SHA256(session_mac_key, canonicalEnvelopeJson(envelope))` in lowercase
+   * hex, where the key is HKDF-derived from the data-channel token. The connector
+   * rejects any inbound envelope whose MAC is absent (when required) or does not
+   * verify. Absent on envelopes the agent emits.
+   */
+  mac?: string;
+
   /** Type-specific payload. See messages.ts. */
   payload: T;
 }
+
+/* ------------------------------------------------------------------ */
+/* Canonical serialization                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Deterministic JSON serialization: object keys sorted by UTF-16 code unit at
+ * every depth, `undefined` object members dropped, arrays preserved in order.
+ *
+ * `JSON.stringify` cannot be used directly because its key order is insertion
+ * order, which the relay and the agent need not agree on. Any value that cannot
+ * be represented unambiguously (functions, symbols, bigint, NaN, Infinity,
+ * cycles, non-plain objects) throws rather than being silently coerced.
+ */
+export function canonicalJson(value: unknown): string {
+  return canonicalize(value, new Set<object>());
+}
+
+function canonicalize(value: unknown, seen: Set<object>): string {
+  if (value === null) {
+    return 'null';
+  }
+  switch (typeof value) {
+    case 'boolean':
+      return value ? 'true' : 'false';
+    case 'number':
+      if (!Number.isFinite(value)) {
+        throw new Error('canonicalJson: non-finite number is not representable');
+      }
+      return JSON.stringify(value);
+    case 'string':
+      return JSON.stringify(value);
+    case 'object':
+      break;
+    default:
+      throw new Error(`canonicalJson: unsupported value of type ${typeof value}`);
+  }
+
+  const obj = value as object;
+  if (seen.has(obj)) {
+    throw new Error('canonicalJson: circular structure');
+  }
+  seen.add(obj);
+  try {
+    if (Array.isArray(obj)) {
+      const items = obj.map((item) => (item === undefined ? 'null' : canonicalize(item, seen)));
+      return `[${items.join(',')}]`;
+    }
+    const proto = Object.getPrototypeOf(obj);
+    if (proto !== Object.prototype && proto !== null) {
+      throw new Error('canonicalJson: only plain objects are representable');
+    }
+    const record = obj as Record<string, unknown>;
+    const parts: string[] = [];
+    for (const key of Object.keys(record).sort()) {
+      const member = record[key];
+      if (member === undefined) {
+        continue;
+      }
+      parts.push(`${JSON.stringify(key)}:${canonicalize(member, seen)}`);
+    }
+    return `{${parts.join(',')}}`;
+  } finally {
+    seen.delete(obj);
+  }
+}
+
+/**
+ * Canonical serialization of an envelope, i.e. the exact byte string the MAC is
+ * computed over. Covers every top-level field except `mac` itself, sorted
+ * deterministically at every depth.
+ */
+export function canonicalEnvelopeJson(
+  msg: AgentMessage<unknown> | Record<string, unknown>,
+): string {
+  if (typeof msg !== 'object' || msg === null) {
+    throw new Error('canonicalEnvelopeJson: envelope must be an object');
+  }
+  const source = msg as Record<string, unknown>;
+  const signed: Record<string, unknown> = {};
+  for (const key of Object.keys(source)) {
+    if (key === 'mac' || source[key] === undefined) {
+      continue;
+    }
+    signed[key] = source[key];
+  }
+  return canonicalJson(signed);
+}
+
+/* ------------------------------------------------------------------ */
+/* Session MAC key derivation, signing, verification                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Derive the per-session envelope MAC key from the data-channel token.
+ *
+ * The data-channel token is already a secret shared by exactly one relay
+ * session; HKDF turns it into a key whose only purpose is envelope
+ * authentication, bound to the agent id and browser session so a key cannot be
+ * reused across sessions even if a relay ever re-issued the same token.
+ */
+export function deriveSessionMacKey(opts: {
+  dataChannelToken: string;
+  agentId: string;
+  browserSessionId: string;
+}): Buffer {
+  if (typeof opts.dataChannelToken !== 'string' || opts.dataChannelToken.length === 0) {
+    throw new Error('deriveSessionMacKey: dataChannelToken must be a non-empty string');
+  }
+  const salt = crypto
+    .createHash('sha256')
+    .update(ENVELOPE_MAC_KDF.saltLabel, 'utf8')
+    .update('\0', 'utf8')
+    .update(opts.agentId, 'utf8')
+    .update('\0', 'utf8')
+    .update(opts.browserSessionId, 'utf8')
+    .digest();
+  const info = `${ENVELOPE_MAC_KDF.infoLabel}/${opts.agentId}/${opts.browserSessionId}`;
+  return Buffer.from(
+    crypto.hkdfSync(
+      ENVELOPE_MAC_KDF.digest,
+      Buffer.from(opts.dataChannelToken, 'utf8'),
+      salt,
+      info,
+      ENVELOPE_MAC_KDF.keyBytes,
+    ),
+  );
+}
+
+/** Lowercase hex HMAC-SHA256 of the canonical envelope. */
+export function computeEnvelopeMac(
+  macKey: Buffer,
+  msg: AgentMessage<unknown> | Record<string, unknown>,
+): string {
+  if (!Buffer.isBuffer(macKey) || macKey.length !== ENVELOPE_MAC_KDF.keyBytes) {
+    throw new Error(`computeEnvelopeMac: macKey must be ${ENVELOPE_MAC_KDF.keyBytes} bytes`);
+  }
+  return crypto
+    .createHmac(ENVELOPE_MAC_KDF.digest, macKey)
+    .update(canonicalEnvelopeJson(msg), 'utf8')
+    .digest('hex');
+}
+
+/**
+ * Return a copy of `msg` carrying its MAC. `nonce` is taken from the message
+ * when present; callers building a fresh outbound envelope should set one first
+ * (see `newEnvelopeNonce`).
+ */
+export function signEnvelope<T>(macKey: Buffer, msg: AgentMessage<T>): AgentMessage<T> {
+  const nonce = msg.nonce ?? newEnvelopeNonce();
+  const unsigned: AgentMessage<T> = { ...msg, nonce };
+  delete unsigned.mac;
+  return { ...unsigned, mac: computeEnvelopeMac(macKey, unsigned) };
+}
+
+/**
+ * Constant-time MAC check. Returns false for a missing, malformed, or
+ * non-matching MAC; never throws.
+ */
+export function verifyEnvelopeMac(
+  macKey: Buffer,
+  msg: AgentMessage<unknown> | Record<string, unknown>,
+): boolean {
+  const mac = (msg as Record<string, unknown>).mac;
+  if (
+    typeof mac !== 'string' ||
+    mac.length !== LIMITS.ENVELOPE_MAC_HEX_LENGTH ||
+    !/^[0-9a-f]+$/.test(mac)
+  ) {
+    return false;
+  }
+  let expected: Buffer;
+  let provided: Buffer;
+  try {
+    expected = Buffer.from(computeEnvelopeMac(macKey, msg), 'hex');
+    provided = Buffer.from(mac, 'hex');
+  } catch {
+    return false;
+  }
+  return expected.length === provided.length && crypto.timingSafeEqual(expected, provided);
+}
+
+/** Fresh anti-replay nonce (base64url, 24 random bytes). */
+export function newEnvelopeNonce(): string {
+  return crypto.randomBytes(24).toString('base64url');
+}
+
+/** True when `nonce` is a syntactically valid envelope nonce. */
+export function isValidEnvelopeNonce(nonce: unknown): nonce is string {
+  return (
+    typeof nonce === 'string' &&
+    nonce.length >= LIMITS.ENVELOPE_NONCE_MIN_LENGTH &&
+    nonce.length <= LIMITS.ENVELOPE_NONCE_MAX_LENGTH &&
+    ENVELOPE_NONCE_PATTERN.test(nonce)
+  );
+}
+
+/**
+ * Highest role a relay may assert for a data-channel session when the operator
+ * has configured no ceiling.
+ *
+ * the key `security.max_negotiable_role` exists in machine config and
+ * this constant was the only place it could have been honoured, yet the default
+ * was `'admin'` — the maximum. That made the ceiling inert: a compromised relay
+ * could assert `admin` and nothing local could stop it. `'developer'` is the
+ * default instead, so a deployment that never thought about the key still gets a
+ * bound, and an install that genuinely needs `admin` must say so explicitly in
+ * machine config (which is logged loudly at startup, and reported by
+ * `sw-agent status`).
+ *
+ * `developer` rather than `data_reader`/`viewer` because `developer` is the
+ * least-privileged role that can actually do the product's work (run
+ * migrations); a stricter default would break every existing install outright
+ * rather than narrowing it.
+ */
+export const ENVELOPE_MAX_NEGOTIABLE_ROLE_DEFAULT: Role = 'developer';
 
 /**
  * Helper: create a message with sensible defaults.
@@ -79,10 +365,10 @@ export function createMessage<T>(
     user: { id: string; role: Role };
     db_alias: string;
     payload: T;
+    nonce?: string;
   },
 ): AgentMessage<T> {
-  const validRoles: Role[] = ['admin', 'developer', 'data_reader', 'viewer'];
-  if (!validRoles.includes(opts.user.role)) {
+  if (!isRole(opts.user.role)) {
     throw new Error(`Invalid role: ${opts.user.role}`);
   }
   return {
@@ -93,6 +379,7 @@ export function createMessage<T>(
     user: opts.user,
     db_alias: opts.db_alias,
     ts: Date.now(),
+    nonce: opts.nonce ?? newEnvelopeNonce(),
     payload: opts.payload,
   };
 }

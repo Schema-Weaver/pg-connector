@@ -18,6 +18,25 @@
     "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
     "@typescript-eslint/explicit-module-boundary-types": "off",
     "no-console": "off",
-    "no-empty": ["error", { "allowEmptyCatch": true }]
-  }
+    "no-empty": ["error", { "allowEmptyCatch": true }],
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "MemberExpression[property.name=/^(substring|substr)$/][object.type=\"Identifier\"][object.name=/^(sql|stmt|statement|query|text)$/i]",
+        "message": "Truncating SQL with .substring()/.substr() ships raw literals to the cloud. Build the preview with previewStatement() from src/audit/redact.ts. If this is not SQL, name the variable something other than sql/stmt/statement/query/text, or disable the rule on this line with a reason."
+      },
+      {
+        "selector": "MemberExpression[property.name=/^(substring|substr)$/][object.type=\"Identifier\"][object.name=/(_|[a-z0-9])(sql|stmt|statement)$/i]",
+        "message": "Truncating SQL with .substring()/.substr() ships raw literals to the cloud. Build the preview with previewStatement() from src/audit/redact.ts. If this is not SQL, name the variable something other than sql/stmt/statement/query/text, or disable the rule on this line with a reason."
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": ["src/audit/redact.ts"],
+      "rules": {
+        "no-restricted-syntax": "off"
+      }
+    }
+  ]
 }

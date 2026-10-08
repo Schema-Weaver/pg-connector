@@ -455,6 +455,7 @@ function splitInput(input: string): string[] {
   const out: string[] = [];
   for (let i = 0; i < input.length; ) {
     if (input[i] === '\x1b') {
+      // eslint-disable-next-line no-control-regex -- matching ANSI escape sequences is the intent
       const match = /^\x1b\[[0-9;]*[~A-Za-z]/.exec(input.slice(i));
       if (match) {
         out.push(match[0]);

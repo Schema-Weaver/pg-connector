@@ -10,8 +10,26 @@ export type ErrorCode =
   // Auth errors
   | 'auth_failed'               // token invalid or expired
   | 'token_expired'             // specifically: token TTL exceeded
-  | 'permission_denied'         // user.role or permission_level blocks this action
+  | 'permission_denied'
+  | 'multiple_statements'
+  | 'unparseable_statement'
+  | 'parser_unavailable'         // user.role or permission_level blocks this action
   | 'role_insufficient'         // viewer/data_reader tried to write
+  // The asserted role is above this installation's local ceiling
+  // (security.max_negotiable_role).
+  | 'role_above_ceiling'
+  // The frame named a project and a db_alias that select different configured
+  // entries, so the agent refuses rather than executing under either label.
+  | 'db_alias_project_mismatch'
+  // No allowed_databases allow-list is configured, so this installation serves
+  // `ping` only.
+  | 'database_scope_not_configured'
+  // The plan was registered against a different project/database than the one
+  // the migration_run names.
+  | 'plan_scope_mismatch'
+  // Two pending manual approvals asked for the same request id; the second is
+  // refused rather than overwriting the first.
+  | 'duplicate_request_id'
   | 'approval_timeout'          // manual approval not given in 60s
   | 'approval_denied'           // user explicitly denied approval
   | 'MANUAL_APPROVAL_TIMEOUT'   // manual approval timed out
@@ -42,6 +60,9 @@ export type ErrorCode =
   // Cancellation
   | 'cancel_failed'             // couldn't cancel (query already done?)
   | 'cancel_target_not_found'   // target_id doesn't match any in-flight request
+  // The caller is neither the requesting principal nor strictly more privileged
+  // than them.
+  | 'cancel_not_permitted'
 
   // Concurrency
   | 'concurrent_request_rejected'  // queue full
@@ -123,12 +144,83 @@ export const ERROR_CATALOG: Record<ErrorCode, ErrorMetadata> = {
     retryable: false,
     recovery_hint: 'Check the DB permission level or your team role.',
   },
+  multiple_statements: {
+    code: 'multiple_statements',
+    default_message:
+      'Multi-statement execution is not permitted. Submit exactly one statement per request.',
+    fatal: false,
+    retryable: false,
+    recovery_hint:
+      'The statement was split by PostgreSQL\'s own parser into more than one statement. ' +
+      'Send each statement separately.',
+  },
+  unparseable_statement: {
+    code: 'unparseable_statement',
+    default_message: 'PostgreSQL could not parse this statement, so it was not executed.',
+    fatal: false,
+    retryable: false,
+    recovery_hint:
+      'Fix the syntax error reported in the message. The agent refuses to execute any SQL it ' +
+      'cannot verify.',
+  },
+  parser_unavailable: {
+    code: 'parser_unavailable',
+    default_message:
+      'The connector\'s SQL parser is unavailable, so no statement can be verified or executed.',
+    fatal: true,
+    retryable: true,
+    recovery_hint: 'Restart the connector. This is a local fault, not a permission problem.',
+  },
   role_insufficient: {
     code: 'role_insufficient',
     default_message: 'Your team role does not allow this action.',
     fatal: false,
     retryable: false,
     recovery_hint: 'Ask an admin to upgrade your role from viewer/data_reader.',
+  },
+  role_above_ceiling: {
+    code: 'role_above_ceiling',
+    default_message: 'The asserted role is above this agent installation\'s role ceiling.',
+    fatal: false,
+    retryable: false,
+    recovery_hint:
+      'The operator can raise security.max_negotiable_role in sw-agent.config.json. Until then ' +
+      'this installation accepts no role above the configured ceiling.',
+  },
+  db_alias_project_mismatch: {
+    code: 'db_alias_project_mismatch',
+    default_message: 'The project and database alias in this request name different databases.',
+    fatal: false,
+    retryable: false,
+    recovery_hint:
+      'Send a request whose project and db_alias identify the same database. The agent refuses ' +
+      'to guess which one was meant.',
+  },
+  database_scope_not_configured: {
+    code: 'database_scope_not_configured',
+    default_message: 'No database allow-list is configured for this agent.',
+    fatal: false,
+    retryable: false,
+    recovery_hint:
+      'The operator must set allowed_databases in sw-agent.config.json (or SW_AGENT_ALLOWED_ ' +
+      'DATABASES) before this agent will serve anything but ping.',
+  },
+  plan_scope_mismatch: {
+    code: 'plan_scope_mismatch',
+    default_message: 'This migration plan was registered against a different database.',
+    fatal: false,
+    retryable: false,
+    recovery_hint:
+      'Register the plan again against the database you intend to migrate; a plan is bound to ' +
+      'the project and database it was reviewed in.',
+  },
+  duplicate_request_id: {
+    code: 'duplicate_request_id',
+    default_message: 'A request with this id is already pending approval.',
+    fatal: false,
+    retryable: false,
+    recovery_hint:
+      'Use a fresh request id. The pending approval is unaffected: nothing was overwritten.',
   },
   approval_timeout: {
     code: 'approval_timeout',
@@ -284,6 +376,15 @@ export const ERROR_CATALOG: Record<ErrorCode, ErrorMetadata> = {
     retryable: false,
     recovery_hint: 'The request may have already finished.',
   },
+  cancel_not_permitted: {
+    code: 'cancel_not_permitted',
+    default_message: 'This request is not yours to cancel.',
+    fatal: false,
+    retryable: false,
+    recovery_hint:
+      'Only the user who issued a request, or someone holding a strictly more privileged ' +
+      'role, can cancel it.',
+  },
   concurrent_request_rejected: {
     code: 'concurrent_request_rejected',
     default_message: 'Too many concurrent requests. Queue full.',
@@ -371,6 +472,13 @@ export function isRetryableError(code: ErrorCode): boolean {
 /**
  * Construct an ErrorPayload for a given code.
  * Optional overrides for message and request_id.
+ *
+ * `overrides.message` is caller-supplied and reaches the browser verbatim, so it
+ * must be either an agent-authored string or the output of a sanitiser
+ * (`src/audit/sanitize.ts`). Never pass a raw driver or parser message:
+ * PostgreSQL `DETAIL` lines carry row data and node-postgres embeds the
+ * connection topology. `pg_error` is limited to the two allow-listed fields the
+ * protocol defines.
  */
 export function makeError(
   code: ErrorCode,

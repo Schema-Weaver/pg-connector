@@ -1,3 +1,24 @@
 {
-  "extends": "./tsconfig.base.json"
+  // The typecheck gate for the whole repository, tests included.
+  //
+  // `npm run typecheck` runs `tsc --noEmit`, which reads this file. The test
+  // tree MUST be in this program: tsx strips types without checking them, so a
+  // test file that imports a type which no longer exists — or that casts
+  // `AuditEvent` to `Record<string, unknown>` — still runs and still passes. It
+  // simply stops testing anything the moment its fixture drifts from the source,
+  // which is exactly the failure mode a test suite exists to prevent.
+  //
+  // Deliberately ONE config rather than a second `typecheck:tests` script: a
+  // separate script is a second thing CI can forget, and `npm run typecheck`
+  // staying green while the tests do not compile is precisely the state this
+  // file exists to make impossible. Cost of including the tests is ~3 s on a
+  // 22k-line test tree (measured: 5.8 s to 9.1 s), which is not a reason to
+  // split the program.
+  //
+  // Emit configs (tsconfig.cjs/esm/types) still extend tsconfig.base.json, which
+  // excludes `src/tests/**` — so nothing test-related reaches `dist/` or the
+  // published tarball.
+  "extends": "./tsconfig.base.json",
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "src/dev/**"]
 }

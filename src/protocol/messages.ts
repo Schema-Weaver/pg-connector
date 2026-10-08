@@ -21,7 +21,15 @@ export interface IntrospectPayload {
   include_partitions: boolean;
   /** Include extensions. Default true. */
   include_extensions: boolean;
-  /** PG version filter. If null, snapshot current state. If "12.0", snapshot as PG 12. */
+  /**
+   * Declared server version the caller expects, e.g. "16.2", or null for "no
+   * expectation".
+   *
+   * Honoured, not ignored (audit L-08): the agent compares the major version
+   * against the server it is actually connected to and refuses the request on a
+   * mismatch, so a snapshot taken against a different server than the caller
+   * believes is never presented as this one.
+   */
   pg_version_hint: string | null;
 }
 
@@ -36,8 +44,24 @@ export interface IntrospectResultPayload {
   extensions: Array<{ name: string; version: string; enabled: boolean }>;
   /** List of schemas (namespaces). */
   schemas: string[];
-  /** Snapshot size in bytes (for budgeting). */
-  size_bytes: number;
+  /**
+   * On-disk size of the database, from `pg_database_size`, or `null` when the
+   * server does not permit it to be read.
+   *
+   * Audit M-30: this field previously carried the JSON byte length of the
+   * snapshot itself, so a viewer of the API could reasonably read it as the
+   * database size and be wrong by orders of magnitude. The response's own size
+   * is now reported separately and honestly as `snapshot_json_bytes`.
+   */
+  size_bytes: number | null;
+  /** Serialised size of this snapshot, in bytes. Use this for budgeting. */
+  snapshot_json_bytes: number;
+  /**
+   * Detail level actually applied, after the requester's role was taken into
+   * account. `structure` means definitions, defaults, trigger metadata, owners,
+   * comments and partition bounds were omitted.
+   */
+  detail: 'full' | 'structure';
 }
 
 // 3.3 Query
@@ -68,6 +92,17 @@ export interface QueryResultPayload {
 }
 
 // 3.4 Stream Query
+/**
+ * Keyset pagination cursor. `column` is applied as an ordered, exclusive bound
+ * on the result (`>` forward, `<` backward), so a page never re-reads or skips
+ * the rows already seen the way an offset does.
+ */
+export interface StreamCursor {
+  column: string;       // column to paginate on (must be unique, ordered)
+  last_value: unknown;  // last value seen (exclusive)
+  direction: 'forward' | 'backward';
+}
+
 export interface StreamQueryPayload {
   sql: string;
   params?: unknown[];
@@ -75,11 +110,7 @@ export interface StreamQueryPayload {
   intent: 'read' | 'write' | 'ddl' | 'migration';
   plan_id?: string;
   /** Optional: cursor for pagination. If provided, agent uses cursor-based fetch. */
-  cursor?: {
-    column: string;       // column to paginate on (must be unique, ordered)
-    last_value: unknown;  // last value seen (exclusive)
-    direction: 'forward' | 'backward';
-  };
+  cursor?: StreamCursor;
   /** Page size for cursor pagination. Default 50 (Data Explorer mode). */
   page_size?: number;
 }
@@ -109,6 +140,13 @@ export interface StreamEndPayload {
   ms: number;
   /** Chunk count sent. */
   chunk_count: number;
+  /**
+   * True when the request carried a cursor and the page ended with rows still
+   * available on the server. Absent means the whole result was delivered.
+   */
+  has_more?: boolean;
+  /** Cursor for the next page. Present only when `has_more` is true. */
+  next_cursor?: StreamCursor;
 }
 
 // 3.7 Migration Run
@@ -160,6 +198,12 @@ export interface CancelResultPayload {
   cancelled: boolean;
   /** Whether the original request actually terminated. */
   terminated: boolean;
+  /**
+   * Whether the agent's in-process cooperative abort fired. True here with
+   * `terminated: false` means the request stopped locally while the
+   * PostgreSQL backend could not be signalled.
+   */
+  local_abort?: boolean;
   /** If false, why not. */
   reason?: string;
 }
@@ -176,21 +220,37 @@ export interface ResponsePayload<T = unknown> {
   ms?: number;
 }
 
-// 3.10 Error
+/** PG-specific error fields that may appear on the wire. */
+export interface PgErrorSummary {
+  /** SQLSTATE, e.g. "23505". Stable, so the browser can branch on failure kind. */
+  code: string;
+  /** ERROR, FATAL, PANIC, WARNING, NOTICE, DEBUG or INFO. */
+  severity: string;
+  /**
+   * Operator-facing hint, always one of the agent's own curated strings for the
+   * SQLSTATE. It is never PostgreSQL's `hint` field, which can quote schema
+   * and column names and suggest DDL the caller did not ask for.
+   */
+  hint?: string;
+}
+
+/**
+ * 3.10 Error
+ *
+ * `pg_error` is an allow-list of two fields. PostgreSQL `DETAIL` and `HINT`
+ * lines routinely contain row data (`DETAIL:  Key (email)=(alice@corp.com)
+ * already exists.`) and error messages embed the offending SQL and absolute
+ * filesystem paths, so neither is carried on this frame; the agent substitutes
+ * a curated message per SQLSTATE instead.
+ */
 export interface ErrorPayload {
   request_id: string;
   /** Stable error code (see errors.ts catalog). */
   code: ErrorCode;
   /** Human-readable message. Safe to show in browser UI. */
   message: string;
-  /** Optional: PG-specific error details. */
-  pg_error?: {
-    code: string;        // PG error code, e.g. "42601"
-    severity: string;    // ERROR, FATAL, etc.
-    detail?: string;
-    hint?: string;
-    position?: number;
-  };
+  /** Optional: reduced, data-free PostgreSQL error summary. */
+  pg_error?: PgErrorSummary;
   /** Whether the error is fatal (connection should be torn down). */
   fatal: boolean;
   /** Whether the error is retryable (browser may auto-retry). */
@@ -220,7 +280,12 @@ export interface StatusChangeEvent {
 export interface MigrationProgressEvent {
   plan_id: string;
   statement_index: number;
-  statement_sql_preview: string;  // first 200 chars of SQL
+  /**
+   * Preview of the statement. MUST be redacted (`redactSqlLiterals`) before it
+   * is transmitted: it is shipped to the cloud by default, and a raw
+   * `substring(0, 100)` carries every literal in the first 100 characters.
+   */
+  statement_sql_preview: string;
   status: MigrationStatementStatus;
   ms?: number;
   error?: string;
@@ -231,9 +296,16 @@ export interface MigrationProgressEvent {
 export interface ApprovalRequiredEvent {
   request_id: string;
   sql: string;
-  sql_preview: string;  // first 200 chars
-  intent: 'write' | 'ddl' | 'migration';
+  /** Redacted + truncated preview. Safe to log and to transmit. */
+  sql_preview: string;
+  intent: 'write' | 'ddl';
   db_alias: string;
+  /**
+   * Unguessable value minted by the agent. The approver must echo it back in
+   * ApprovalResponseEvent; without it any sender could approve any pending
+   * write by guessing the request id.
+   */
+  approval_nonce: string;
   /** When approval expires (epoch ms). */
   expires_at: number;
 }
@@ -241,8 +313,17 @@ export interface ApprovalRequiredEvent {
 export interface ApprovalResponseEvent {
   request_id: string;
   approved: boolean;
-  /** ID of user who approved/denied (browser stamps this). */
-  approved_by: string;
+  /**
+   * Must equal the `approval_nonce` from the corresponding ApprovalRequiredEvent.
+   * Verified by the agent.
+   */
+  approval_nonce: string;
+  /**
+   * Display-only. The agent IGNORES this value and records the approver from
+   * the authenticated envelope instead, so a spoofed string cannot be used to
+   * fabricate an approval in the audit log.
+   */
+  approved_by?: string;
 }
 
 export interface WarningEvent {

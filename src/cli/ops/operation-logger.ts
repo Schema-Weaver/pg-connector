@@ -22,15 +22,24 @@ let client: CloudClient | null = null;
 let agentId: string | undefined;
 
 /**
- * Operation logger — records CLI/lifecycle operations (init, db add/remove,
- * agent start/stop, config changes) so the browser UI can show what was
- * performed on this machine. Two sinks:
+ * Operation logger — a local + cloud record of CLI/lifecycle operations, with
+ * two sinks available to any caller:
  *
- *   1. Local: ~/.sw-agent/operations.jsonl (always, synchronous append).
- *   2. Cloud: POST /api/agent/operations/ingest (best-effort, batched).
+ *   1. Local: `~/.sw-agent/operations.jsonl` (synchronous append, 0o600).
+ *   2. Cloud: POST /api/agent/operations/ingest (best-effort, batched, only
+ *      once {@link initOperationLogger} has attached a client).
  *
- * The cloud sink is fire-and-forget; if the endpoint isn't live yet, events
- * still persist locally and are delivered once the backend ships.
+ * **Nothing in this repository emits an operation yet.** `logOperation()` and
+ * `withOperation()` have no callers outside this module, so `operations.jsonl` is
+ * not written and no ingest request is ever made — only the daemon calls
+ * {@link initOperationLogger}, which attaches the client and sets `agentId`.
+ *
+ * That is stated here rather than implied by a comment claiming that init, db
+ * add/remove, agent start/stop and config changes are recorded, because the old
+ * header asserted behaviour the code did not have (audit finding M-23). Wiring it
+ * up is a deliberate step at real lifecycle points in `src/cli/commands/*` and
+ * `src/cli/daemon/runtime.ts`; do not infer from this file that those points
+ * exist. Until then, treat this as an available mechanism, not an active record.
  */
 export function initOperationLogger(opts: {
   enabled: boolean;
@@ -61,7 +70,12 @@ export function getOperationsPath(): string {
   return path.join(getSwAgentDir(), OPERATIONS_PATH_SUFFIX);
 }
 
-/** Record an operation event to local + cloud. Never throws. */
+/**
+ * Record an operation event to local + cloud. Never throws.
+ *
+ * No caller reaches this today (see the module header); it is the entry point a
+ * lifecycle call site would use.
+ */
 export function logOperation(event: OperationEvent): void {
   // Local sink — synchronous, reliable.
   try {
@@ -92,6 +106,8 @@ export async function shutdownOperationLogger(): Promise<void> {
  * Wrap an async operation so it emits `started` and `ok`/`error` events
  * automatically. Returns whatever the wrapped function returns (or rethrows
  * after logging the error).
+ *
+ * No caller reaches this today (see the module header).
  */
 export async function withOperation<T>(
   op: string,
@@ -125,7 +141,12 @@ export async function withOperation<T>(
   }
 }
 
-/** Read recent operation events from the local log, newest last. */
+/**
+ * Read recent operation events from the local log, newest last.
+ *
+ * Returns an empty list while nothing emits operations: the file does not exist
+ * until `logOperation()` runs at least once.
+ */
 export async function readRecentOperations(limit: number): Promise<OperationEvent[]> {
   try {
     const content = await fs.promises.readFile(getOperationsPath(), 'utf8');

@@ -15,7 +15,7 @@ import {
   runDbShow,
 } from './commands/db';
 import { runProjectList, runProjectShow } from './commands/project';
-import { runStart, runStop, runStatus, runRestart, runClean } from './commands/agent';
+import { runStart, runStop, runStatus, runRestart, runClean, runAgentRotateToken, runAgentUnlink } from './commands/agent';
 import { runDoctor } from './commands/doctor';
 import { runLogs } from './commands/logs';
 import { runAuditVerify } from './commands/audit-verify';
@@ -55,6 +55,9 @@ ${C.bold(C.brand('Agent & Daemon'))}
   ${C.cyan('agent restart')}      Restart the agent                  ${C.dim('(alias: restart)')}
   ${C.cyan('agent status')}       Show agent + channel + DB status   ${C.dim('(alias: status, ps, top, agent)')}
   ${C.cyan('agent clean')}        Clean stale PID/status and daemon  ${C.dim('(alias: clean, kill)')}
+  ${C.cyan('  clean --audit')}    Reset the audit trail + floor anchor${C.dim(' (destructive, needs --force)')}
+  ${C.cyan('agent rotate-token')} Mint a new agent token (keeps ID)  ${C.dim('--yes to skip prompt')}
+  ${C.cyan('agent unlink')}       Clear this machine's cloud link     ${C.dim('--yes to skip prompt')}
 
 ${C.bold(C.brand('Service & Autostart'))}
   ${C.cyan('service install')}    Install 24/7 background service for this OS
@@ -64,7 +67,7 @@ ${C.bold(C.brand('Service & Autostart'))}
 
 ${C.bold(C.brand('Configuration'))}
   ${C.cyan('config [show]')}      Show machine configuration         ${C.dim('(alias: config, --token to reveal)')}
-  ${C.cyan('config get <key>')}   Get specific configuration value
+  ${C.cyan('config get <key>')}   Get config value (${C.dim('agent_token masked')})
   ${C.cyan('config set <k> <v>')} Update config setting (cloud_url, log_level, etc.)
   ${C.cyan('config path')}        Show config & runtime file paths
 
@@ -136,6 +139,7 @@ async function runNamed(command: string, rest: string[]): Promise<number> {
     'db show', 'db info', 'db logs', 'db query', 'db connect',
     'project list', 'project show',
     'agent start', 'agent stop', 'agent status', 'agent restart', 'agent clean',
+    'agent rotate-token', 'agent unlink',
     'config show', 'config get', 'config set', 'config path',
     'audit verify',
   ]);
@@ -185,6 +189,8 @@ async function runNamed(command: string, rest: string[]): Promise<number> {
     case 'agent status': await runStatus(args); break;
     case 'agent restart': await runRestart(args); break;
     case 'agent clean': await runClean(args); break;
+    case 'agent rotate-token': await runAgentRotateToken(args); break;
+    case 'agent unlink': await runAgentUnlink(args); break;
     case 'doctor': await runDoctor(args); break;
     case 'debug': await runDebug(args); break;
     case 'service': await runService(args); break;
@@ -252,7 +258,7 @@ export async function main(argv: string[]): Promise<number> {
       return err.exitCode;
     }
     if (err && typeof err === 'object' && '__exitCode' in err) {
-      return (err as any).__exitCode as number;
+      return (err as { __exitCode: number }).__exitCode;
     }
     const message = err instanceof Error ? err.message : String(err);
     console.error(`\n  ${C.red('Error:')} ${message}\n`);

@@ -1,39 +1,63 @@
+# ---------------------------------------------------------------------------
+# Dependencies and build output
+# ---------------------------------------------------------------------------
 node_modules/
 dist/
-*.log
+
+# Incremental compiler state
+*.tsbuildinfo
+
+# ---------------------------------------------------------------------------
+# Local credentials and agent state
+#
+# .sw-agent/ is the runtime home for the agent token, the credential key file
+# and the audit log. It must never be committed: the token is a permanent
+# bearer credential and audit.key is the HMAC key that makes the chain
+# verifiable, so publishing either destroys the guarantee it provides.
+# ---------------------------------------------------------------------------
 .env
 .env.local
 .sw-agent/
 
-# IDE
+# ---------------------------------------------------------------------------
+# Tests & Test Output (kept locally, not pushed to git)
+# ---------------------------------------------------------------------------
+coverage/
+.nyc_output/
+src/tests/
+test/
+*.test.ts
+*.spec.ts
+test-*.ts
+scripts/test-postgres-e2e.sh
+
+# Untracked scratch directory for throwaway scripts and one-off probes during
+# development. Purely local, never part of the package.
+.scratch/
+
+# ---------------------------------------------------------------------------
+# Editor and OS cruft
+# ---------------------------------------------------------------------------
 .idea/
 .vscode/
 *.swp
 *.swo
-
-# OS
 .DS_Store
 Thumbs.db
+*.log
 
-# Test artifacts (kept locally, not pushed to GitHub)
-coverage/
-.nyc_output/
-src/tests/
-
-# Build artifacts
-*.tsbuildinfo
-
-# Development/debug files (kept locally, not pushed to GitHub)
-*.test.ts
-test-*.ts
+# ---------------------------------------------------------------------------
+# Local development scratch scripts
+#
+# These are developer throwaway files that were written against a live
+# database. They are excluded because they routinely contain hard-coded
+# connection strings and DROP/TRUNCATE statements, and committing one would
+# put either a credential or an unguarded destructive statement into the
+# permanent history. They are intentionally listed by name rather than by
+# pattern: a pattern would also hide legitimate source. Verified with
+# `git ls-files` that none of these are tracked.
+# ---------------------------------------------------------------------------
 run-query.ts
 db-ops.ts
 delete-tables.ts
 
-# Prompt files (kept locally, not pushed to GitHub)
-sw-agent-part*.md
-
-# Analysis and Architecture documents
-ARCHITECTURE.md
-security-analysis.md
-sw-agent-current-flow-analysis.md

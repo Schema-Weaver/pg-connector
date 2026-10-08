@@ -14,12 +14,12 @@ export interface PidFileOptions {
 export async function writePidFile(opts: PidFileOptions, info: PidFile): Promise<void> {
   const dir = path.dirname(opts.path);
   await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
-  
+
   const existing = await readPidFile(opts);
   if (existing && isProcessAlive(existing.pid)) {
     throw new Error(`Agent already running (pid ${existing.pid})`);
   }
-  
+
   await fs.promises.writeFile(opts.path, JSON.stringify(info, null, 2), {
     mode: 0o600,
     encoding: 'utf8',

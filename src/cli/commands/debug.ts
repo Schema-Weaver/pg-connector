@@ -5,10 +5,20 @@ import * as net from 'net';
 import * as tls from 'tls';
 import { URL } from 'url';
 import { VERSION } from '../../index';
-import { getAgentHome, getMachineConfigPath, getDbConfigPath, getAuditLogPath, getDaemonLogPath, getPidFilePath } from '../../config/paths';
+import {
+  getAgentHome,
+  getMachineConfigPath,
+  getDbConfigPath,
+  getAuditLogPath,
+  getDaemonLogPath,
+  getPidFilePath,
+  getErrorsPath,
+} from '../../config/paths';
 import { machineConfigExists, loadMachineConfig } from '../../config/machine-config';
 import { dbConfigExists, loadDbConfig } from '../../config/db-config';
 import { readPidFile, isProcessAlive } from '../daemon/pid-file';
+import { readRecentErrors, getErrorLogStats } from '../daemon/error-tracker';
+import { DAEMON_ENV_ALLOW_LIST, UNRECOGNISED_SECURITY_ENV } from '../daemon/state';
 import { isReplMode } from '../prompt';
 import { C, S } from '../ui';
 import { runDbTest } from './db-test';
@@ -27,7 +37,9 @@ export async function runDebug(args: string[] = []): Promise<void> {
 
   console.log();
   console.log(`  ${C.bold(C.brand('Schema Weaver Connector — Diagnostic Debugger'))}`);
-  console.log(`  ${C.dim(`CLI v${VERSION} · Node ${process.version} · ${os.type()} ${os.release()} (${os.arch()})`)}`);
+  console.log(
+    `  ${C.dim(`CLI v${VERSION} · Node ${process.version} · ${os.type()} ${os.release()} (${os.arch()})`)}`,
+  );
   console.log();
 
   // 1. Environment & Paths
@@ -40,15 +52,22 @@ export async function runDebug(args: string[] = []): Promise<void> {
   const pidPath = getPidFilePath();
 
   console.log(`     Home Directory : ${C.white(home)}`);
-  console.log(`     Machine Config : ${C.dim(machineConfigPath)} ${machineConfigExists() ? C.green(S.check) : C.red(S.cross)}`);
-  console.log(`     DB Config      : ${C.dim(dbConfigPath)} ${dbConfigExists() ? C.green(S.check) : C.yellow(S.warning)}`);
+  console.log(
+    `     Machine Config : ${C.dim(machineConfigPath)} ${machineConfigExists() ? C.green(S.check) : C.red(S.cross)}`,
+  );
+  console.log(
+    `     DB Config      : ${C.dim(dbConfigPath)} ${dbConfigExists() ? C.green(S.check) : C.yellow(S.warning)}`,
+  );
   console.log(`     Audit Trail    : ${C.dim(auditPath)}`);
   console.log(`     Daemon Log     : ${C.dim(daemonLogPath)}`);
+  console.log(`     Error Log      : ${C.dim(getErrorsPath())}`);
 
   // Daemon PID state
   const pidInfo = await readPidFile({ path: pidPath });
   const isAlive = pidInfo ? isProcessAlive(pidInfo.pid) : false;
-  console.log(`     Daemon Process : ${pidInfo ? (isAlive ? `${C.green('RUNNING')} (pid ${pidInfo.pid})` : C.red('STALE PID')) : C.dim('STOPPED')}`);
+  console.log(
+    `     Daemon Process : ${pidInfo ? (isAlive ? `${C.green('RUNNING')} (pid ${pidInfo.pid})` : C.red('STALE PID')) : C.dim('STOPPED')}`,
+  );
   console.log();
 
   // 2. Network & Proxy Configuration
@@ -74,13 +93,19 @@ export async function runDebug(args: string[] = []): Promise<void> {
     try {
       const parsed = new URL(relay);
       const host = parsed.hostname;
-      const port = parsed.port ? parseInt(parsed.port, 10) : (parsed.protocol === 'https:' || parsed.protocol === 'wss:' ? 443 : 80);
+      const port = parsed.port
+        ? parseInt(parsed.port, 10)
+        : parsed.protocol === 'https:' || parsed.protocol === 'wss:'
+          ? 443
+          : 80;
 
       // DNS lookup
       const dnsStart = Date.now();
       const addresses = await dns.lookup(host, { all: true });
       const dnsLatency = Date.now() - dnsStart;
-      console.log(`     DNS Resolution : ${C.green(S.check)} ${addresses.map(a => a.address).join(', ')} (${C.cyan(`${dnsLatency}ms`)})`);
+      console.log(
+        `     DNS Resolution : ${C.green(S.check)} ${addresses.map((a) => a.address).join(', ')} (${C.cyan(`${dnsLatency}ms`)})`,
+      );
 
       // TCP Connect Probe
       const tcpStart = Date.now();
@@ -96,7 +121,9 @@ export async function runDebug(args: string[] = []): Promise<void> {
         });
       });
       const tcpLatency = Date.now() - tcpStart;
-      console.log(`     TCP Handshake  : ${C.green(S.check)} Port ${port} reachable (${C.cyan(`${tcpLatency}ms`)})`);
+      console.log(
+        `     TCP Handshake  : ${C.green(S.check)} Port ${port} reachable (${C.cyan(`${tcpLatency}ms`)})`,
+      );
 
       // TLS Handshake Probe (if HTTPS/WSS)
       if (parsed.protocol === 'https:' || parsed.protocol === 'wss:') {
@@ -113,10 +140,14 @@ export async function runDebug(args: string[] = []): Promise<void> {
           });
         });
         const tlsLatency = Date.now() - tlsStart;
-        console.log(`     TLS Handshake  : ${C.green(S.check)} TLS negotiation successful (${C.cyan(`${tlsLatency}ms`)})`);
+        console.log(
+          `     TLS Handshake  : ${C.green(S.check)} TLS negotiation successful (${C.cyan(`${tlsLatency}ms`)})`,
+        );
       }
-    } catch (err: any) {
-      console.log(`     Relay Probe    : ${C.red(S.cross)} ${err.message}`);
+    } catch (err: unknown) {
+      console.log(
+        `     Relay Probe    : ${C.red(S.cross)} ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   } else {
     console.log(`     Relay Endpoint : ${C.dim('Not initialized (run pg-connector init)')}`);
@@ -139,9 +170,13 @@ export async function runDebug(args: string[] = []): Promise<void> {
         totalHashErrors += res.hashErrors;
       }
       if (totalHashErrors === 0) {
-        console.log(`     Audit Trail    : ${C.green(S.check)} ${C.white(String(totalEvents))} events across ${files.length} file(s) verified (0 hash errors)`);
+        console.log(
+          `     Audit Trail    : ${C.green(S.check)} ${C.white(String(totalEvents))} events across ${files.length} file(s) verified (0 hash errors)`,
+        );
       } else {
-        console.log(`     Audit Trail    : ${C.yellow(S.warning)} ${totalEvents} events, ${C.red(`${totalHashErrors} hash error(s)`)} detected`);
+        console.log(
+          `     Audit Trail    : ${C.yellow(S.warning)} ${totalEvents} events, ${C.red(`${totalHashErrors} hash error(s)`)} detected`,
+        );
       }
     }
   } catch {
@@ -149,8 +184,46 @@ export async function runDebug(args: string[] = []): Promise<void> {
   }
   console.log();
 
-  // 4. Database Probes
-  console.log(`  ${C.bold('4. Database Probes & Reachability')}`);
+  // 4. Error Telemetry
+  console.log(`  ${C.bold('4. Error Telemetry (redacted, rotated)')}`);
+  const errorStats = getErrorLogStats();
+  console.log(`     Error Log      : ${C.dim(errorStats.path)}`);
+  console.log(
+    `     Size / Records : ${C.white(formatBytes(errorStats.size_bytes))} / ${C.white(String(errorStats.records))} ${C.dim(`(${errorStats.archives} archive(s))`)}`,
+  );
+  const recentErrors = await readRecentErrors(verbose ? 10 : 3);
+  if (recentErrors.length === 0) {
+    console.log(`     Recent Errors  : ${C.dim('none recorded')}`);
+  } else {
+    for (const rec of recentErrors) {
+      const op = rec.op ? `${C.cyan(rec.op)} ` : '';
+      const code = rec.code ? `${C.yellow(rec.code)} ` : '';
+      console.log(`     ${C.dim(rec.ts)} ${C.red(rec.level)} ${op}${code}${C.white(rec.message)}`);
+    }
+  }
+  console.log(`     ${C.dim('SQL fragments and absolute paths are stripped before writing.')}`);
+  console.log();
+
+  // 5. Recognised environment
+  console.log(`  ${C.bold('5. Recognised Environment Variables')}`);
+  const present = DAEMON_ENV_ALLOW_LIST.filter((n) => process.env[n] !== undefined);
+  console.log(
+    `     Inherited      : ${C.dim(`${present.length} of ${DAEMON_ENV_ALLOW_LIST.length} allow-listed`)}`,
+  );
+  const refusedPresent = Object.keys(UNRECOGNISED_SECURITY_ENV).filter(
+    (n) => process.env[n] !== undefined,
+  );
+  if (refusedPresent.length > 0) {
+    console.log(
+      `     ${C.yellow(S.warning)} Refused       : ${C.yellow(refusedPresent.join(', '))} ${C.dim('(not forwarded to the daemon, stripped at daemon startup)')}`,
+    );
+  } else {
+    console.log(`     Refused        : ${C.dim('none set')}`);
+  }
+  console.log();
+
+  // 6. Database Probes
+  console.log(`  ${C.bold('6. Database Probes & Reachability')}`);
   if (dbConfigExists()) {
     const dbs = loadDbConfig();
     console.log(`     Configured DBs : ${C.white(String(dbs.length))}`);
@@ -165,4 +238,10 @@ export async function runDebug(args: string[] = []): Promise<void> {
   console.log(`  ${C.green(S.check)} Diagnostic inspection complete.`);
   console.log();
   exit_(0);
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }

@@ -1,5 +1,15 @@
 {
+  // `npm run build:dev` — a plain `tsc` build of the source tree into `dist/`.
+  //
+  // The test tree is excluded here on purpose, and only here: this config
+  // *emits*, so including `src/tests/**` would publish compiled test files and
+  // fixtures into `dist/`. Type coverage of the tests comes from tsconfig.json,
+  // which `npm run typecheck` runs and which includes them.
+  //
+  // Note that `*.spec.ts` used to be typechecked here but `*.test.ts` was not —
+  // the asymmetric exclude is what let `npx tsc -p tsconfig.dev.json` look
+  // mostly clean while 40 real errors sat in the `.test.ts` half of the suite.
   "extends": "./tsconfig.base.json",
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+  "exclude": ["node_modules", "dist", "src/dev/**", "src/tests/**"]
 }

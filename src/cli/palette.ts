@@ -163,6 +163,7 @@ export async function showInlinePalette(
     };
 
     const parseMouseEvent = (str: string): { action: string; y: number } | null => {
+      // eslint-disable-next-line no-control-regex -- matching ANSI escape sequences is the intent
       const match = str.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])/);
       if (!match) return null;
       const button = parseInt(match[1], 10);

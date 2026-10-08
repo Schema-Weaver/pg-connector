@@ -43,22 +43,25 @@ Unlike standard database connection proxies that store customer passwords and co
                           │ Local TCP / SSL Pool
                           ▼
                   CUSTOMER DATABASE
-               (PostgreSQL 12, 13, 14, 15, 16, 17)
+               (PostgreSQL 12 and later)
 ```
 
 ### 1. Local Credential Boundary (LCB)
-Database host, port, username, password, connection strings, and SSL private keys **remain strictly inside your environment** in `~/.sw-agent/databases.config.json` (POSIX file mode `0o600`) or local OS environment variables. The cloud control plane receives only scoped identities (`agent_id`, `db_alias`, and `database` name) and an active connection token hash.
+Database host, port, username, password, connection strings, and SSL private keys **remain strictly inside your environment** in `~/.sw-agent/databases.config.json` (POSIX file mode `0o600`) or local OS environment variables. Passwords stored in that file are encrypted at rest with AES-256-GCM under a scrypt-derived key. The cloud control plane receives scoped identities (`agent_id`, `db_alias`, and `database` name) plus the query text, results, and schema needed to serve your session, carried over TLS, and an active connection token hash: the agent sends `HMAC-SHA256(token, "sw-agent/relay-auth/v1")` rather than the token itself, so the long-lived secret never appears on the wire.
 
 ### 2. Connector-Enforced Read-Only Execution (CERO)
 The connector acts as the final gatekeeper between external requests and your database engine:
-- **Anti-Spoofing & Re-Classification**: Every query received from the cloud is re-parsed and re-classified locally. If a request claims `intent: 'read'` but contains write or mutating commands, it is blocked immediately.
-- **Role-Based Access Control**: Enforces 4 permission levels (`read_only`, `auto_upgrade`, `manual`, `full`) and role capabilities (`admin`, `developer`, `data_reader`, `viewer`) locally before touching the database connection pool.
+- **Real PostgreSQL Parser**: Every statement received from the cloud is parsed with PostgreSQL's own grammar (`libpg_query`) and classified from the resulting parse tree — not from a keyword guess. Multi-statement input is refused outright, and `SELECT … INTO`, `FOR UPDATE`, writable CTEs, and calls to privileged functions (`pg_read_file`, `lo_import`, `dblink_exec`, `setval`, …) are detected structurally. Classification is allowlist-based: only `SELECT` and `SHOW` are reads, and anything that fails to parse is denied.
+- **PostgreSQL Verdict Before "Read"**: A `SELECT` counts as a read only when every function it references is reported by `pg_proc` as `IMMUTABLE` and not `SECURITY DEFINER`. Anything else — volatile, stable, security-definer, or unresolvable — is escalated to the DDL capability requirement, so an operator-written function cannot be reached through a read. This is deliberately stricter than PostgreSQL's own guarantee: a `SELECT now()` needs the `ddl` capability.
+- **Anti-Spoofing**: The browser's claimed `intent` is advisory only. If it disagrees with the parsed classification, the request is rejected — and no `intent` value grants an exemption.
+- **Enforced by the database too**: For a `read_only` database the connection itself runs with `default_transaction_read_only = on`, so PostgreSQL raises `25006` on a write even if classification were wrong. This constrains writes in the connector's own transaction; the connected database role remains the final authority, and `pg-connector doctor` reports its attributes.
+- **Role-Based Access Control**: Enforces 4 permission levels (`read_only`, `auto_upgrade`, `manual`, `full`) and role capabilities (`admin`, `developer`, `data_reader`, `viewer`) locally before touching the connection pool. The role arrives inside an envelope authenticated by the relay, and must fall within both the set negotiated for the session and this installation's `security.max_negotiable_role` ceiling (default `developer`).
 
-### 3. Transient Data Plane (Zero Cloud Data Replication)
-Query results are streamed in memory over TLS WebSocket connections directly to the browser session. Rows exist ephemerally in RAM buffers during transit and are **never persisted** to any cloud database, cache, or disk storage.
+### 3. Transient Data Plane
+Query results are streamed in memory over TLS WebSocket connections directly to the browser session. Rows exist ephemerally in RAM buffers during transit; the connector **never writes them to disk**, and nothing in this package persists them to any cache or database.
 
 ### 4. Cryptographic Audit Log
-Every operation (query, migration, schema introspection, cancellation) is recorded locally in `~/.sw-agent/audit/audit.jsonl` using a tamper-evident **SHA-256 cryptographic hash chain**, providing non-repudiation and auditability for SOC 2 compliance.
+Every operation (query, migration, schema introspection, cancellation) is recorded locally in `~/.sw-agent/audit/audit.jsonl` using a tamper-evident **HMAC-SHA256 cryptographic hash chain** with a monotonic sequence number and an anchored head. Each record names the database the request actually resolved to. Chain integrity is verifiable on demand with `pg-connector audit verify`.
 
 ---
 
@@ -91,7 +94,7 @@ npm install @schema-weaver/pg-connector
 Initialize machine configuration and generate your connector token:
 
 ```bash
-sw-agent init
+pg-connector init
 ```
 ```text
   Schema Weaver Agent — First Time Setup
@@ -115,22 +118,24 @@ sw-agent init
 
 #### Option A: Interactive Mode (with Live Connection Probe)
 ```bash
-sw-agent db add
+pg-connector db add
 ```
-Follow the interactive prompts. Passwords can be stored securely in the local configuration file or referenced dynamically from an environment variable (e.g. `$DB_PASSWORD`).
+Follow the interactive prompts. The password is read from a masked prompt, stored encrypted in the local configuration file. You can instead point at an environment variable (see Option C).
 
 #### Option B: Non-Interactive via Connection URL
 ```bash
-sw-agent db add \
-  --url postgresql://app_user:secret_pass@localhost:5432/acme_prod \
+# The URL carries no password: a --url with a password is refused.
+pg-connector db add \
+  --url postgresql://app_user@localhost:5432/acme_prod \
   --alias acme-db \
   --project acme \
-  --ssl require
+  --ssl verify-full \
+  --password-stdin
 ```
 
 #### Option C: Non-Interactive via Command-Line Flags
 ```bash
-sw-agent db add \
+pg-connector db add \
   --alias analytics \
   --project warehouse \
   --host 10.0.1.20 \
@@ -143,49 +148,64 @@ sw-agent db add \
   --permission read_only
 ```
 
+#### Password sources
+
+`db add` refuses `--password` and `--pw`, and refuses a `--url` that carries a password: `process.argv` is readable by every local user. Supported channels, safest first:
+
+| Channel | Notes |
+| :--- | :--- |
+| `SW_AGENT_DB_PASSWORD=<value> pg-connector db add …` | Read from the environment at run time |
+| `--password-stdin` | Read from stdin |
+| `--password-file <path>` | Must be mode `0600` and must not be a symlink |
+| `--env <VAR>` | Stores only the variable **name**; the value is read at connect time |
+| *(no flag)* | Masked interactive prompt |
+
+> [!NOTE]
+> `--ssl` accepts `disable`, `require`, `verify-ca` and `verify-full`. New entries default to `require`, which is TLS without certificate verification — set it explicitly in any environment where the database hop is not fully trusted.
+
 ### Step 3: Test & Inspect Connections
 
 ```bash
 # Fast reachability ping
-sw-agent db ping acme-db
+pg-connector db ping acme-db
 
 # Full connection test with latency measurement
-sw-agent db test acme-db
+pg-connector db test acme-db
 
 # Multi-step deep diagnostics (network, catalog, permissions, timeouts)
-sw-agent db test acme-db --detailed
+pg-connector db test acme-db --detailed
 
 # Detailed configuration and connection inspection
-sw-agent db show acme-db
+pg-connector db show acme-db
 
 # Execute a quick query directly from the terminal
-sw-agent db query acme-db "SELECT current_database(), version();"
+pg-connector db query acme-db "SELECT current_database(), version();"
 
 # Launch an interactive database console session
-sw-agent db connect acme-db
+pg-connector db connect acme-db
 ```
 
 ### Step 4: Start the Background Daemon
 
 ```bash
 # Foreground execution (great for testing or Docker containers)
-sw-agent start
+pg-connector start
 
 # Background daemon mode (standard server operation)
-sw-agent start --daemon
+pg-connector start --daemon
 ```
 
 ### Step 5: Check Status & Health
 
 ```bash
-sw-agent status
+pg-connector status
 ```
 ```text
   Schema Weaver Agent — Status
   ──────────────────────────────────────────────────
   Process:           running (PID 4821)
   Uptime:            4h 12m 35s
-  Version:           0.1.0
+  Version:           2.0.0
   Agent ID:          agt_prod-bastion_8f2b1a9c
   Cloud URL:         wss://api.schemaweaver.dev
   Permission Level:  read_only
@@ -213,44 +233,44 @@ sw-agent status
 
 | Command | Description |
 | :--- | :--- |
-| `sw-agent db add` | Add a database (interactive, `--url <postgres://...>`, or non-interactive flags) |
-| `sw-agent db list` (or `db ls`) | Display all configured databases in a formatted table |
-| `sw-agent db show <alias>` | Show detailed configuration and credentials mode for a database (`--json` supported) |
-| `sw-agent db edit <alias>` | Modify database settings (interactive or via flags: `--host`, `--port`, `--env`, etc.) |
-| `sw-agent db test <alias>` | Test connection latency (`--detailed` for deep diagnostics) |
-| `sw-agent db ping <alias>` | Quick millisecond round-trip reachability ping |
-| `sw-agent db query <alias> "<SQL>"` | Execute a query and output tabular results directly in the terminal |
-| `sw-agent db connect <alias>` | Open an interactive SQL REPL session directly connected to the database |
-| `sw-agent db logs <alias>` | View recent audit execution logs for a specific database |
-| `sw-agent db remove <alias>` | Detach and remove a database from the local configuration |
+| `pg-connector db add` | Add a database (interactive, `--url <postgres://…>` with no password, or non-interactive flags). Passwords come from the masked prompt, `--password-stdin`, `--password-file`, `--env <VAR>` or `SW_AGENT_DB_PASSWORD`; `--password`/`--pw` are refused |
+| `pg-connector db list` (or `db ls`) | Display all configured databases in a formatted table |
+| `pg-connector db show <alias>` | Show detailed configuration and credentials mode for a database (`--json` supported) |
+| `pg-connector db edit <alias>` | Modify database settings (interactive or via flags: `--host`, `--port`, `--env`, etc.) |
+| `pg-connector db test <alias>` | Test connection latency (`--detailed` for deep diagnostics) |
+| `pg-connector db ping <alias>` | Quick millisecond round-trip reachability ping |
+| `pg-connector db query <alias> "<SQL>"` | Execute a query and output tabular results directly in the terminal |
+| `pg-connector db connect <alias>` | Open an interactive SQL REPL session directly connected to the database |
+| `pg-connector db logs <alias>` | View recent audit execution logs for a specific database |
+| `pg-connector db remove <alias>` | Detach and remove a database from the local configuration |
 
 ### Daemon & Lifecycle Management
 
 | Command | Description |
 | :--- | :--- |
-| `sw-agent start` | Start the connector in foreground mode |
-| `sw-agent start --daemon` | Start the connector as a background daemon process |
-| `sw-agent stop` | Send `SIGTERM` to the daemon and clean up PID files (`--force` for `SIGKILL`) |
-| `sw-agent status` | Show real-time process health, connection channel states, and active database count |
-| `sw-agent clean` | Stop running daemons and remove stale PID files, status files, and orphaned sockets |
-| `sw-agent doctor` | Run pre-flight checks: configs, file permissions, node version, and database reachability |
+| `pg-connector start` | Start the connector in foreground mode |
+| `pg-connector start --daemon` | Start the connector as a background daemon process |
+| `pg-connector stop` | Send `SIGTERM` to the daemon and clean up PID files (`--force` for `SIGKILL`) |
+| `pg-connector status` | Show real-time process health, connection channel states, and active database count |
+| `pg-connector clean` | Stop running daemons and remove stale PID files, status files, and orphaned sockets |
+| `pg-connector doctor` | Run pre-flight checks: configs, file permissions, node version, and database reachability |
 
 ### Configuration Management (`config`)
 
 | Command | Description |
 | :--- | :--- |
-| `sw-agent config show` | View sanitized machine configuration (`--token` reveals the pairing token) |
-| `sw-agent config get <key>` | Read a specific configuration key (e.g. `cloud_url`, `permission`, `log_level`) |
-| `sw-agent config set <key> <val>` | Update a specific configuration key |
-| `sw-agent config path` | Print the filesystem paths to all configuration, audit, and log files |
+| `pg-connector config show` | View sanitized machine configuration (`--token` reveals the pairing token) |
+| `pg-connector config get <key>` | Read a specific configuration key (e.g. `cloud_url`, `permission`, `log_level`) |
+| `pg-connector config set <key> <val>` | Update a specific configuration key |
+| `pg-connector config path` | Print the filesystem paths to all configuration, audit, and log files |
 
 ### Security & Audit (`logs`, `audit`)
 
 | Command | Description |
 | :--- | :--- |
-| `sw-agent logs` | View the cryptographic audit log (`--limit <n>`, `--user <id>`, `--action <query\|migrate>`) |
-| `sw-agent logs --follow` | Stream live audit log events as they execute |
-| `sw-agent audit verify` | Verify the cryptographic SHA-256 hash chain to ensure logs have not been tampered with |
+| `pg-connector logs` | View the cryptographic audit log (`--limit <n>`, `--user <id>`, `--action <query\|migrate>`) |
+| `pg-connector logs --follow` | Stream live audit log events as they execute |
+| `pg-connector audit verify` | Verify the cryptographic SHA-256 hash chain to ensure logs have not been tampered with |
 
 ---
 
@@ -260,14 +280,18 @@ sw-agent status
 
 For production deployments on dedicated hosts or cloud VMs, use systemd to manage automatic restarts:
 
-1. Install the connector globally:
+1. Install the connector globally, as the user that will run the service. Use a
+   versioned, per-user prefix rather than a global root install: `sudo npm
+   install -g` runs third-party install scripts as root and writes root-owned
+   files into a directory every account on the host can reach.
    ```bash
-   sudo npm install -g @schema-weaver/pg-connector
+   npm install -g --prefix "$HOME/.local" @schema-weaver/pg-connector
+   export PATH="$HOME/.local/bin:$PATH"
    ```
 2. Initialize and configure your database as your service user:
    ```bash
    pg-connector init
-   pg-connector db add --url postgresql://app_user:pass@127.0.0.1:5432/app_db --alias app-db --project main
+   pg-connector db add --url postgresql://app_user@127.0.0.1:5432/app_db --alias app-db --project main --password-stdin
    ```
 3. Generate and install the systemd unit file:
    ```bash
@@ -321,13 +345,13 @@ docker run -d \
 
 ---
 
-## Private VPC, Zero-Ingress & Proxy Environments
+## Private VPC, Zero-Ingress & Corporate Forward-Proxy Environments
 
 The connector is engineered specifically for secure enterprise networks and private VPCs:
 
 - **Zero Ingress Rules (0 Inbound Open Ports)**: The daemon **never** executes `server.listen()`. It opens no ports on the host. Firewalls and AWS Security Groups need **zero inbound rules** (`0.0.0.0:ANY` blocked).
-- **Outbound-Only Over Standard Port 443**: Initiates outbound WSS connections over port 443 (standard HTTPS), traversing NAT Gateways without custom port rules.
-- **Corporate Forward Proxy Support**: Respects `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` environment variables for corporate firewalls (Zscaler, Squid, Envoy).
+- **Outbound-Only Over TLS**: Initiates outbound WSS connections on the standard HTTPS port, traversing NAT Gateways without custom port rules. Plaintext `ws://` cloud URLs are refused at startup.
+- **Corporate TLS Inspection**: For forward proxies that intercept TLS, point Node at your organisation's CA with `NODE_EXTRA_CA_CERTS`.
 - **Air-Gapped / 100% Offline Direct Mode**: For strictly isolated networks with no internet egress, the CLI executes queries, tests, and audit verification directly over the local PostgreSQL wire protocol without external network calls (`pg-connector db query <alias> "<sql>"`).
 
 ---
@@ -336,71 +360,67 @@ The connector is engineered specifically for secure enterprise networks and priv
 
 `@schema-weaver/pg-connector` provides full programmatic exports for custom integrations and automated workflows.
 
-### Client Example: Executing Queries via Relay
+### Client Example: Executing Queries Locally
+
+The package exports the same building blocks the daemon uses, so you can embed
+query execution in your own tooling.
 
 ```typescript
-import { AgentClient } from '@schema-weaver/pg-connector';
+import { PoolManager, QueryRunner } from '@schema-weaver/pg-connector';
 
-const client = new AgentClient({
-  relayUrl: 'wss://api.schemaweaver.dev',
-  agentId: 'agt_prod-bastion_8f2b1a9c',
-  token: process.env.SW_AGENT_TOKEN,
-});
+const pools = new PoolManager();
+const runner = new QueryRunner({ poolManager: pools });
 
-await client.connect();
-
-const ctx = {
-  project: 'acme',
-  role: 'developer' as const,
-  userId: 'usr_sarah_123',
-};
-
-// 1. One-shot parameterized query
-const result = await client.query({
-  sql: 'SELECT id, email, created_at FROM users WHERE status = $1 LIMIT 50',
-  params: ['active'],
-  intent: 'read',
-}, ctx);
+// 1. One-shot parameterized query (bound parameters; never string-interpolated)
+const result = await runner.runOneShot(
+  { sql: 'SELECT id, email, created_at FROM users WHERE status = $1 LIMIT 50',
+    params: ['active'],
+    intent: 'read' },
+  { dbEntry, request_id: crypto.randomUUID(), classification },
+);
 
 console.log(`Executed in ${result.ms}ms:`, result.rows);
 
-// 2. High-volume streaming query (chunked async iterable)
-for await (const chunk of client.streamQuery({
-  sql: 'SELECT * FROM event_logs ORDER BY id ASC',
-  intent: 'read',
-}, ctx)) {
-  console.log(`Chunk ${chunk.chunkIndex}: ${chunk.rows.length} rows`);
-}
-
-// 3. Schema Introspection
-const schema = await client.introspect(ctx);
-console.log('Detected schemas and tables:', schema.tables);
-
-await client.disconnect();
+// 2. Streaming query, delivered chunk by chunk
+await runner.runStreaming(
+  { sql: 'SELECT * FROM event_logs ORDER BY id ASC', intent: 'read' },
+  { dbEntry, request_id, classification,
+    onChunk: async (chunk) => console.log(`Chunk ${chunk.chunk_index}: ${chunk.rows.length} rows`) },
+);
 ```
+
+To drive the relay itself, use `AgentSession` (wake + data channels), wiring
+`onMessage` to a `Dispatcher` with your own permission checker.
 
 ---
 
-## Security Architecture & SOC 2 Compliance
+## Security Architecture & Controls
 
-Schema Weaver’s connector architecture was audited and certified against real production workflows:
+Schema Weaver’s connector architecture applies defense-in-depth security controls:
 
-| Security Domain | Implementation | Code Verification |
+| Security Domain | Implementation | Verification |
 | :--- | :--- | :--- |
-| **Credential Boundary (LCB)** | Passwords and connection strings remain on customer host. Stripped before transmission. | [`sw-agent/src/cli/daemon/runtime.ts:175-179`](file:///c:/schema-weaver/sw-agent/src/cli/daemon/runtime.ts#L175-L179) |
-| **Read-Only Enforcement (CERO)** | Connector re-parses incoming SQL independently. Reject-by-default intent matching. | [`sw-agent/src/permissions/checker.ts:38-47`](file:///c:/schema-weaver/sw-agent/src/permissions/checker.ts#L38-L47) |
-| **Telemetry Privacy (GDPR/SOC 2)** | SQL statements in cloud telemetry have string and numeric literals redacted to `'?'`. | [`backend/.../event-logger.service.js:31-36`](file:///c:/schema-weaver/backend/services/database-connection/agent-relay/event-logger.service.js#L31-L36) |
-| **Data Retention** | Query results are processed ephemerally in RAM and forwarded to the browser. Zero cloud disk persistence. | [`backend/.../query.routes.js:55`](file:///c:/schema-weaver/backend/routes/database-connection/agent-relay/query.routes.js#L55) |
-| **Tamper-Evident Audit Trail** | Cryptographic hash chaining (`hash = sha256(prev_hash + event_data)`). Verified on demand. | [`sw-agent/src/audit/chain.ts`](file:///c:/schema-weaver/sw-agent/src/audit/chain.ts) |
+| **Credential Boundary (LCB)** | Passwords and connection strings remain on customer host. Resolved locally and passed straight to the pool; never serialised into any message. | `src/execution/pool.ts` (`acquire()`) · Local surface tests |
+| **Read-Only Enforcement (CERO)** | Every statement is parsed with the real PostgreSQL grammar (`libpg_query`) and classified from the parse tree, and a `SELECT` is a read only when every function it calls is proved `IMMUTABLE` and not `SECURITY DEFINER` by `pg_proc`. Multi-statement input is refused; `read_only` additionally runs the connection with `default_transaction_read_only = on`. | `src/execution/statement-classifier.ts`, `src/execution/function-effects.ts` & `src/permissions/role-policy.ts` · Classifier and permission tests |
+| **Message Authentication** | Each data-channel envelope carries an HMAC over its canonical form, a per-message nonce, and a timestamp, all bound to a key derived from the session token. | `src/protocol/envelope.ts` · Envelope auth tests |
+| **Telemetry Privacy** | SQL previews are passed through a PostgreSQL-aware lexer that replaces literals, comments, and dollar-quoted bodies before anything is transmitted or logged. | `src/audit/redact.ts` · Redaction tests |
+| **Data Retention** | Query results are processed ephemerally in RAM and forwarded to the browser. The connector never writes row data to disk. | `src/execution/query-runner.ts` · In-memory stream tests |
+| **Tamper-Evident Audit Trail** | Records are chained with HMAC-SHA256 under a locally-held key, carry a monotonic sequence number, and are anchored in a separate head file. Verified on demand. | `src/audit/chain.ts` & `src/audit/local-writer.ts` · `pg-connector audit verify` |
+
+> [!NOTE]
+> To report a security vulnerability or view disclosure guidelines, see [SECURITY.md](./SECURITY.md).
 
 ### Local File Permissions
 
-All files created by `@schema-weaver/pg-connector` reside in `~/.sw-agent/` with POSIX `0o600` permissions (read/write by the owner only):
+All files created by `@schema-weaver/pg-connector` reside in `~/.sw-agent/`, which is created with POSIX `0o700`, and are written `0o600` (read/write by the owner only):
 
 - `sw-agent.config.json` — Machine label, Agent ID, Cloud URL, permission level.
-- `databases.config.json` — Local database configurations, user names, and encrypted/stored passwords.
-- `audit.log` — Cryptographically chained audit event records.
+- `databases.config.json` — Local database configurations, user names, and encrypted passwords.
+- `audit/audit.jsonl` — Cryptographically chained audit event records. The directory itself is `0o700`.
+- `audit.key` — Local key used to chain and verify those records.
 - `sw-agent.pid` / `sw-agent.status` — Ephemeral runtime state files.
+
+One file lives outside the agent home by design: `~/.sw-agent-credential.key`, mode `0o400`, holds the key the stored database passwords are encrypted under. Copy it with the agent home or those passwords will not decrypt.
 
 ---
 

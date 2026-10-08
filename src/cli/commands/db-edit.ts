@@ -1,11 +1,12 @@
-import { ask, askChoice, askSecret, closePrompts, isReplMode } from '../prompt';
-import { findDbEntry, loadDbConfig, saveDbConfig, DbEntry } from '../../config/db-config';
+import { ask, askChoice, askSecret, closePrompts, isReplMode, resolveSecret } from '../prompt';
+import { findDbEntry, mutateDbConfig, DbEntry } from '../../config/db-config';
 import {
   isValidIdentifier,
   isValidHostname,
   isValidIpv4,
   isValidIpv6,
   isValidEnvVarName,
+  redactSecrets,
 } from '../../config/schema';
 import { PermissionLevel } from '../../config/machine-config';
 import * as fs from 'fs';
@@ -40,8 +41,10 @@ export async function runDbEdit(args: string[]): Promise<void> {
     console.log(`    ${C.cyan('--host <host>')}          Host name or IP address`);
     console.log(`    ${C.cyan('--port <port>')}          Port (default: 5432)`);
     console.log(`    ${C.cyan('--database <name>')}      Database name`);
-    console.log(`    ${C.cyan('--user <username>')}      Database user`);
-    console.log(`    ${C.cyan('--password <secret>')}    Store password directly`);
+console.log(`    ${C.cyan('--user <username>')}      Database user`);
+    console.log(`    ${C.cyan('--password-file <path>')} Read the password from a file (0600)`);
+    console.log(`    ${C.cyan('--password-stdin')}       Read the password from stdin`);
+    console.log(`    ${C.dim('--password <secret> (deprecated, exposes the password in process.argv)')}`);
     console.log(`    ${C.cyan('--env <var_name>')}       Use environment variable for password`);
     console.log(`    ${C.cyan('--ssl <mode>')}           SSL mode (disable, require, verify-ca, verify-full)`);
     console.log(`    ${C.cyan('--cert <path>')}          Path to CA root certificate`);
@@ -66,26 +69,43 @@ export async function runDbEdit(args: string[]): Promise<void> {
     exit_(1);
   }
 
-  const config = loadDbConfig();
-  const idx = config.findIndex((e) => e.db_alias === alias);
-  const newEntry: Partial<DbEntry> = { ...entry };
+  const found = entry as DbEntry;
+  const newEntry: Partial<DbEntry> = { ...found };
 
   // Check if non-interactive flags are provided
   const flagHost = findFlag(args, '--host', '-h');
   const flagPort = findFlag(args, '--port', '-p');
   const flagDb = findFlag(args, '--database', '-d', '--db');
   const flagUser = findFlag(args, '--user', '-u');
-  const flagPassword = findFlag(args, '--password', '--pw');
   const flagEnv = findFlag(args, '--env', '--password-env');
   const flagSsl = findFlag(args, '--ssl', '--ssl-mode');
   const flagCert = findFlag(args, '--cert', '--ssl-cert');
   const flagPerm = findFlag(args, '--permission', '--perm');
   const flagProject = findFlag(args, '--project');
 
+  const hasPasswordFlag =
+    args.includes('--password') ||
+    args.includes('--pw') ||
+    args.includes('--password-file') ||
+    args.includes('--password-stdin');
+
   const hasFlags = Boolean(
-    flagHost || flagPort || flagDb || flagUser || flagPassword ||
+    flagHost || flagPort || flagDb || flagUser || hasPasswordFlag ||
     flagEnv || flagSsl || flagCert || flagPerm || flagProject
   );
+
+  function persist(): void {
+    mutateDbConfig((current) => {
+      const at = current.findIndex((e) => e.db_alias === alias);
+      if (at !== -1) {
+        current[at] = {
+          ...found,
+          ...newEntry,
+          created_at: found.created_at,
+        } as DbEntry;
+      }
+    });
+  }
 
   if (hasFlags) {
     const updatedFields: string[] = [];
@@ -136,8 +156,27 @@ export async function runDbEdit(args: string[]): Promise<void> {
       updatedFields.push('user');
     }
 
-    if (flagPassword !== undefined) {
-      newEntry.password_stored = flagPassword;
+    if (hasPasswordFlag) {
+      let supplied: string | undefined;
+      try {
+        supplied = (
+          await resolveSecret({
+            args,
+            label: 'Database password',
+            argvFlags: ['--password', '--pw'],
+            fileFlags: ['--password-file'],
+            stdinFlags: ['--password-stdin'],
+          })
+        ).value;
+      } catch (err) {
+        console.log(`  ${C.red(S.cross)} ${err instanceof Error ? err.message : String(err)}`);
+        exit_(1);
+      }
+      if (!supplied) {
+        console.log(`  ${C.red(S.cross)} No password received.`);
+        exit_(1);
+      }
+      newEntry.password_stored = supplied;
       newEntry.password_env = undefined;
       updatedFields.push('password (stored)');
     } else if (flagEnv !== undefined) {
@@ -183,22 +222,25 @@ export async function runDbEdit(args: string[]): Promise<void> {
       updatedFields.push('permission');
     }
 
-    config[idx] = {
-      ...entry,
-      ...newEntry,
-      created_at: entry.created_at,
-    } as DbEntry;
-
-    saveDbConfig(config);
-
-    console.log();
-    console.log(`  ${check(`Database "${C.cyan(alias)}" updated successfully.`)}`);
-    console.log();
-    console.log(`  ${C.bold('Updated fields:')}`);
-    for (const f of updatedFields) {
-      console.log(`    ${C.cyan(S.dot)} ${C.white(f)}`);
+    try {
+      persist();
+    } catch (err) {
+      console.log(
+        `  ${C.red(S.cross)} Failed to save: ${redactSecrets(err instanceof Error ? err.message : String(err), newEntry.password_stored)}`,
+      );
+      exit_(1);
     }
-    console.log();
+
+    if (updatedFields.length > 0) {
+      console.log();
+      console.log(`  ${check(`Database "${C.cyan(alias)}" updated successfully.`)}`);
+      console.log();
+      console.log(`  ${C.bold('Updated fields:')}`);
+      for (const f of updatedFields) {
+        console.log(`    ${C.cyan(S.dot)} ${C.white(f)}`);
+      }
+      console.log();
+    }
     exit_(0);
   }
 
@@ -211,7 +253,7 @@ export async function runDbEdit(args: string[]): Promise<void> {
   // Ask which field(s) to edit — skip if only one field is requested.
   const field = args[1];
   let fieldsToEdit: readonly string[];
-  if (field && VALID_FIELDS.includes(field as any)) {
+  if (field && (VALID_FIELDS as readonly string[]).includes(field)) {
     fieldsToEdit = [field];
   } else {
     const choice = await askChoice(
@@ -223,29 +265,29 @@ export async function runDbEdit(args: string[]): Promise<void> {
   }
 
   if (fieldsToEdit.includes('project_name')) {
-    const val = await ask(`Project name`, entry.project_name);
+    const val = await ask(`Project name`, found.project_name);
     if (val && isValidIdentifier(val, 64)) newEntry.project_name = val;
     else console.log(`  ${cross('Invalid, keeping current.')}`);
   }
   if (fieldsToEdit.includes('host')) {
-    const val = await ask(`Host`, entry.host);
+    const val = await ask(`Host`, found.host);
     if (val && (isValidHostname(val) || isValidIpv4(val) || isValidIpv6(val)))
       newEntry.host = val;
     else console.log(`  ${cross('Invalid, keeping current.')}`);
   }
   if (fieldsToEdit.includes('port')) {
-    const val = await ask(`Port`, String(entry.port));
+    const val = await ask(`Port`, String(found.port));
     const num = parseInt(val, 10);
     if (!isNaN(num) && num >= 1 && num <= 65535) newEntry.port = num;
     else console.log(`  ${cross('Invalid, keeping current.')}`);
   }
   if (fieldsToEdit.includes('database')) {
-    const val = await ask(`Database name`, entry.database);
+    const val = await ask(`Database name`, found.database);
     if (val && val.length <= 63) newEntry.database = val;
     else console.log(`  ${cross('Invalid, keeping current.')}`);
   }
   if (fieldsToEdit.includes('user')) {
-    const val = await ask(`Username`, entry.user);
+    const val = await ask(`Username`, found.user);
     if (val && val.length <= 63) newEntry.user = val;
     else console.log(`  ${cross('Invalid, keeping current.')}`);
   }
@@ -256,7 +298,7 @@ export async function runDbEdit(args: string[]): Promise<void> {
       'Keep current',
     );
     if (pwChoice === 'Use environment variable') {
-      const envVar = await ask('Env var name', entry.password_env || 'DB_PASSWORD');
+      const envVar = await ask('Env var name', found.password_env || 'DB_PASSWORD');
       newEntry.password_env = envVar;
       newEntry.password_stored = undefined;
     } else if (pwChoice === 'Enter new password') {
@@ -269,12 +311,12 @@ export async function runDbEdit(args: string[]): Promise<void> {
     const newSsl = await askChoice(
       'SSL mode',
       ['disable', 'require', 'verify-ca', 'verify-full'],
-      entry.ssl_mode,
+      found.ssl_mode,
     );
     newEntry.ssl_mode = newSsl as DbEntry['ssl_mode'];
 
     if (newEntry.ssl_mode !== 'disable') {
-      const cert = await ask('SSL root cert path', entry.ssl_root_cert || '');
+      const cert = await ask('SSL root cert path', found.ssl_root_cert || '');
       if (cert.trim() === '') {
         newEntry.ssl_root_cert = null;
       } else if (fs.existsSync(cert)) {
@@ -290,20 +332,26 @@ export async function runDbEdit(args: string[]): Promise<void> {
     const perm = await askChoice(
       'Permission',
       ['read_only', 'auto_upgrade', 'manual', 'full', 'use default'],
-      entry.permission_override || 'use default',
+      found.permission_override || 'use default',
     );
     newEntry.permission_override =
       perm === 'use default' ? null : (perm as PermissionLevel);
   }
 
   const updatedEntry: DbEntry = {
-    ...entry,
+    ...found,
     ...newEntry,
-    created_at: entry.created_at,
+    created_at: found.created_at,
   };
 
-  config[idx] = updatedEntry;
-  saveDbConfig(config);
+  try {
+    persist();
+  } catch (err) {
+    console.log(
+      `  ${C.red(S.cross)} Error: ${redactSecrets(err instanceof Error ? err.message : String(err), newEntry.password_stored)}`,
+    );
+    exit_(1);
+  }
 
   console.log();
   console.log(`  ${check('Database updated successfully.')}`);
@@ -311,7 +359,13 @@ export async function runDbEdit(args: string[]): Promise<void> {
   console.log(`  ${C.bold('Updated fields:')}`);
   for (const f of fieldsToEdit) {
     const label = FIELD_LABELS[f] || f;
-    const val = (updatedEntry as any)[f];
+    if (f === 'password') {
+      console.log(
+        `    ${C.bold(label.padEnd(14))} ${C.white(newEntry.password_env ? `$${newEntry.password_env}` : 'stored (AES-256-GCM at rest)')}`,
+      );
+      continue;
+    }
+    const val = updatedEntry[f as keyof DbEntry];
     console.log(`    ${C.bold(label.padEnd(14))} ${C.white(String(val ?? 'default'))}`);
   }
   console.log();

@@ -37,8 +37,11 @@ export function deserialize<T = unknown>(raw: string): AgentMessage<T> {
   let parsed: any;
   try {
     parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new ProtocolError('invalid_message', `Malformed JSON: ${err instanceof Error ? err.message : String(err)}`);
+  } catch {
+    // Deliberately no `err.message`: V8 quotes the offending input in its parse
+    // errors, so the frame that carried a statement or a secret would be
+    // echoed back verbatim.
+    throw new ProtocolError('invalid_message', 'Malformed JSON');
   }
 
   if (!parsed || typeof parsed !== 'object') {
@@ -46,7 +49,10 @@ export function deserialize<T = unknown>(raw: string): AgentMessage<T> {
   }
 
   if (parsed.v !== PROTOCOL_VERSION) {
-    throw new ProtocolError('protocol_version_mismatch', `Protocol version mismatch. Expected ${PROTOCOL_VERSION}, got ${parsed.v}`);
+    throw new ProtocolError(
+      'protocol_version_mismatch',
+      'Protocol version mismatch. Expected version 1.',
+    );
   }
 
   return parsed as AgentMessage<T>;

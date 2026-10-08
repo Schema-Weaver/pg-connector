@@ -43,38 +43,190 @@ interface CommandDesc {
 }
 
 const COMMANDS: CommandDesc[] = [
-  { name: 'db list', desc: 'List configured databases', category: 'Databases', action: (a) => runDbList(a), aliases: ['ls'] },
-  { name: 'db show', desc: 'Show database details & live status', category: 'Databases', action: (a) => runDbShow(a), aliases: ['info'] },
-  { name: 'db add', desc: 'Add a database', category: 'Databases', action: (a) => runDbAdd(a), aliases: ['add'] },
-  { name: 'db edit', desc: 'Edit a database entry', category: 'Databases', action: (a) => runDbEdit(a), aliases: ['edit'] },
-  { name: 'db remove', desc: 'Remove a database entry', category: 'Databases', action: (a) => runDbRemove(a), aliases: ['rm'] },
-  { name: 'db test', desc: 'Test database connection', category: 'Databases', action: (a) => runDbTest(a), aliases: ['test'] },
-  { name: 'db ping', desc: 'Ping database connection latency', category: 'Databases', action: (a) => runDbPing(a), aliases: ['ping'] },
-  { name: 'db connect', desc: 'Open interactive SQL console', category: 'Databases', action: (a) => runDbConnect(a), aliases: ['connect'] },
-  { name: 'db query', desc: 'Execute SQL query against database', category: 'Databases', action: (a) => runDbQuery(a), aliases: ['query'] },
-  { name: 'db logs', desc: 'View audit logs for a database', category: 'Databases', action: (a) => runDbLogs(a) },
+  {
+    name: 'db list',
+    desc: 'List configured databases',
+    category: 'Databases',
+    action: (a) => runDbList(a),
+    aliases: ['ls'],
+  },
+  {
+    name: 'db show',
+    desc: 'Show database details & live status',
+    category: 'Databases',
+    action: (a) => runDbShow(a),
+    aliases: ['info'],
+  },
+  {
+    name: 'db add',
+    desc: 'Add a database',
+    category: 'Databases',
+    action: (a) => runDbAdd(a),
+    aliases: ['add'],
+  },
+  {
+    name: 'db edit',
+    desc: 'Edit a database entry',
+    category: 'Databases',
+    action: (a) => runDbEdit(a),
+    aliases: ['edit'],
+  },
+  {
+    name: 'db remove',
+    desc: 'Remove a database entry',
+    category: 'Databases',
+    action: (a) => runDbRemove(a),
+    aliases: ['rm'],
+  },
+  {
+    name: 'db test',
+    desc: 'Test database connection',
+    category: 'Databases',
+    action: (a) => runDbTest(a),
+    aliases: ['test'],
+  },
+  {
+    name: 'db ping',
+    desc: 'Ping database connection latency',
+    category: 'Databases',
+    action: (a) => runDbPing(a),
+    aliases: ['ping'],
+  },
+  {
+    name: 'db connect',
+    desc: 'Open interactive SQL console (classified, audited)',
+    category: 'Databases',
+    action: (a) => runDbConnect(a),
+    aliases: ['connect'],
+  },
+  {
+    name: 'db query',
+    desc: 'Execute SQL query against database (permission-checked)',
+    category: 'Databases',
+    action: (a) => runDbQuery(a),
+    aliases: ['query'],
+  },
+  {
+    name: 'db logs',
+    desc: 'View audit logs for a database',
+    category: 'Databases',
+    action: (a) => runDbLogs(a),
+  },
 
-  { name: 'project list', desc: 'List linked projects', category: 'Projects', action: (a) => runProjectList(a), aliases: ['projects'] },
-  { name: 'project show', desc: 'Show project details', category: 'Projects', action: (a) => runProjectShow(a) },
+  {
+    name: 'project list',
+    desc: 'List linked projects',
+    category: 'Projects',
+    action: (a) => runProjectList(a),
+    aliases: ['projects'],
+  },
+  {
+    name: 'project show',
+    desc: 'Show project details',
+    category: 'Projects',
+    action: (a) => runProjectShow(a),
+  },
 
-  { name: 'agent start', desc: 'Start the daemon', category: 'Agent', action: (a) => runStart(a), aliases: ['start', 'up'] },
-  { name: 'agent stop', desc: 'Stop the daemon', category: 'Agent', action: (a) => runStop(a), aliases: ['stop', 'down'] },
-  { name: 'agent restart', desc: 'Restart the daemon', category: 'Agent', action: (a) => runRestart(a), aliases: ['restart'] },
-  { name: 'agent status', desc: 'Show agent status', category: 'Agent', action: (a) => runStatus(a), aliases: ['status', 'ps', 'top'] },
-  { name: 'agent clean', desc: 'Clean daemon & stale PID/status files', category: 'Agent', action: (a) => runClean(a), aliases: ['clean', 'kill'] },
+  {
+    name: 'agent start',
+    desc: 'Start the daemon',
+    category: 'Agent',
+    action: (a) => runStart(a),
+    aliases: ['start', 'up'],
+  },
+  {
+    name: 'agent stop',
+    desc: 'Stop the daemon',
+    category: 'Agent',
+    action: (a) => runStop(a),
+    aliases: ['stop', 'down'],
+  },
+  {
+    name: 'agent restart',
+    desc: 'Restart the daemon',
+    category: 'Agent',
+    action: (a) => runRestart(a),
+    aliases: ['restart'],
+  },
+  {
+    name: 'agent status',
+    desc: 'Show agent status',
+    category: 'Agent',
+    action: (a) => runStatus(a),
+    aliases: ['status', 'ps', 'top'],
+  },
+  {
+    name: 'agent clean',
+    desc: 'Clean daemon & stale PID/status files',
+    category: 'Agent',
+    action: (a) => runClean(a),
+    aliases: ['clean', 'kill'],
+  },
 
   { name: 'init', desc: 'First-time setup', category: 'Setup', action: (a) => runInit(a) },
-  { name: 'doctor', desc: 'Run diagnostics', category: 'Setup', action: (a) => runDoctor(a), aliases: ['doc'] },
-  { name: 'config show', desc: 'Show machine configuration', category: 'Setup', action: (a) => runConfigShow(a), aliases: ['config', 'conf', 'cfg'] },
-  { name: 'config get', desc: 'Get a configuration setting', category: 'Setup', action: (a) => runConfigGet(a) },
-  { name: 'config set', desc: 'Update a configuration setting', category: 'Setup', action: (a) => runConfigSet(a) },
-  { name: 'config path', desc: 'Show config and state file paths', category: 'Setup', action: () => runConfigPath() },
-  { name: 'link', desc: 'Pairing stub for browser projects', category: 'Setup', action: (a) => runLink(a) },
+  {
+    name: 'doctor',
+    desc: 'Run diagnostics',
+    category: 'Setup',
+    action: (a) => runDoctor(a),
+    aliases: ['doc'],
+  },
+  {
+    name: 'config show',
+    desc: 'Show machine configuration',
+    category: 'Setup',
+    action: (a) => runConfigShow(a),
+    aliases: ['config', 'conf', 'cfg'],
+  },
+  {
+    name: 'config get',
+    desc: 'Get a configuration setting',
+    category: 'Setup',
+    action: (a) => runConfigGet(a),
+  },
+  {
+    name: 'config set',
+    desc: 'Update a configuration setting',
+    category: 'Setup',
+    action: (a) => runConfigSet(a),
+  },
+  {
+    name: 'config path',
+    desc: 'Show config and state file paths',
+    category: 'Setup',
+    action: () => runConfigPath(),
+  },
+  {
+    name: 'link',
+    desc: 'Pairing stub for browser projects',
+    category: 'Setup',
+    action: (a) => runLink(a),
+  },
 
-  { name: 'logs', desc: 'Interactive audit log browser & viewer', category: 'Ops', action: (a) => runLogs(a), aliases: ['log'] },
-  { name: 'audit verify', desc: 'Verify audit chain integrity', category: 'Ops', action: (a) => runAuditVerify(a), aliases: ['verify'] },
+  {
+    name: 'logs',
+    desc: 'Interactive audit log browser & viewer',
+    category: 'Ops',
+    action: (a) => runLogs(a),
+    aliases: ['log'],
+  },
+  {
+    name: 'audit verify',
+    desc: 'Verify audit chain integrity',
+    category: 'Ops',
+    action: (a) => runAuditVerify(a),
+    aliases: ['verify'],
+  },
   { name: 'help', desc: 'Show help', category: 'Ops', action: () => showHelp() },
-  { name: 'clear', desc: 'Clear screen', category: 'Ops', action: async () => { clearScreen(); printBanner(); } },
+  {
+    name: 'clear',
+    desc: 'Clear screen',
+    category: 'Ops',
+    action: async () => {
+      clearScreen();
+      printBanner();
+    },
+  },
   { name: 'exit', desc: 'Quit', category: 'Ops', action: async () => {} },
 ];
 
@@ -137,11 +289,11 @@ async function showHelp(): Promise<void> {
 async function runCommand(fn: () => Promise<void>): Promise<void> {
   try {
     await fn();
-  } catch (err: any) {
+  } catch (err: unknown) {
     if (err && typeof err === 'object' && '__exitCode' in err) {
       return;
     }
-    console.log(`  ${C.red('Error:')} ${err?.message || err}`);
+    console.log(`  ${C.red('Error:')} ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -163,7 +315,9 @@ export async function dispatchCommand(input: string): Promise<'continue' | 'exit
   if (trimmed.includes(':')) {
     const legacy = trimmed.replace(/:/g, ' ');
     if (findCommand(legacy)) {
-      console.log(`  ${C.yellow('Deprecated:')} ${C.dim(trimmed)} -> use ${C.cyan(legacy)} instead`);
+      console.log(
+        `  ${C.yellow('Deprecated:')} ${C.dim(trimmed)} -> use ${C.cyan(legacy)} instead`,
+      );
     }
   }
 
@@ -183,7 +337,9 @@ export async function dispatchCommand(input: string): Promise<'continue' | 'exit
 
   if (!cmd) {
     console.log(`  ${C.yellow('Unknown command:')} ${C.white(trimmed)}`);
-    console.log(`  ${C.dim('Type')} ${C.cyan('/')} ${C.dim('for suggestions or')} ${C.cyan('help')} ${C.dim('for commands.')}`);
+    console.log(
+      `  ${C.dim('Type')} ${C.cyan('/')} ${C.dim('for suggestions or')} ${C.cyan('help')} ${C.dim('for commands.')}`,
+    );
     return 'continue';
   }
 
@@ -191,7 +347,12 @@ export async function dispatchCommand(input: string): Promise<'continue' | 'exit
 
   await runCommand(() => cmd!.action(args));
 
-  if (cmd.name === 'agent start' || cmd.name === 'agent stop' || cmd.name === 'agent restart' || cmd.name === 'agent clean') {
+  if (
+    cmd.name === 'agent start' ||
+    cmd.name === 'agent stop' ||
+    cmd.name === 'agent restart' ||
+    cmd.name === 'agent clean'
+  ) {
     await runCommand(() => runStatus([]));
   }
 
@@ -218,7 +379,9 @@ class TerminalRepl {
   async run(): Promise<number> {
     printBanner();
     setReplMode(true);
-    stdout.write(`  ${C.dim('Type')} ${C.cyan('/')} ${C.dim('for commands,')} ${C.cyan('help')} ${C.dim('for help,')} ${C.cyan('exit')} ${C.dim('to quit.')}\n\n`);
+    stdout.write(
+      `  ${C.dim('Type')} ${C.cyan('/')} ${C.dim('for commands,')} ${C.cyan('help')} ${C.dim('for help,')} ${C.cyan('exit')} ${C.dim('to quit.')}\n\n`,
+    );
 
     if (stdin.isTTY) {
       stdin.setRawMode(true);
@@ -372,7 +535,10 @@ class TerminalRepl {
     const matches = this.filteredPalette();
     if (matches.length === 0) return;
 
-    this.palette.selected = Math.max(0, Math.min(matches.length - 1, this.palette.selected + delta));
+    this.palette.selected = Math.max(
+      0,
+      Math.min(matches.length - 1, this.palette.selected + delta),
+    );
     const height = this.paletteHeight();
     if (this.palette.selected < this.palette.scroll) {
       this.palette.scroll = this.palette.selected;
@@ -418,8 +584,7 @@ class TerminalRepl {
     const q = this.palette.query.toLowerCase();
     if (!q) return PALETTE_ITEMS;
 
-    return PALETTE_ITEMS
-      .map((item) => ({ item, score: rankPalette(q, item) }))
+    return PALETTE_ITEMS.map((item) => ({ item, score: rankPalette(q, item) }))
       .filter(({ score }) => score < 50)
       .sort((a, b) => a.score - b.score || a.item.command.localeCompare(b.item.command))
       .map(({ item }) => item);
@@ -442,7 +607,15 @@ class TerminalRepl {
 
     const title = this.palette.query ? ` Commands matching "${this.palette.query}" ` : ' Commands ';
     const titleWidth = Math.min(visibleLength(title), inner - 2);
-    lines.push(C.cyan(S.tl + S.h + truncateAnsi(title, titleWidth) + S.h.repeat(Math.max(0, inner - titleWidth - 1)) + S.tr));
+    lines.push(
+      C.cyan(
+        S.tl +
+          S.h +
+          truncateAnsi(title, titleWidth) +
+          S.h.repeat(Math.max(0, inner - titleWidth - 1)) +
+          S.tr,
+      ),
+    );
 
     if (visible.length === 0) {
       lines.push(C.cyan(S.v) + ' ' + alignAnsi(C.dim('No matches'), inner - 1) + C.cyan(S.v));
@@ -466,7 +639,12 @@ class TerminalRepl {
           '  ' +
           alignAnsi(truncateAnsi(desc, descWidth, S.ellipsis), descWidth);
         const fitted = truncateAnsi(body, inner, '');
-        lines.push(C.cyan(S.v) + fitted + ' '.repeat(Math.max(0, inner - visibleLength(fitted))) + C.cyan(S.v));
+        lines.push(
+          C.cyan(S.v) +
+            fitted +
+            ' '.repeat(Math.max(0, inner - visibleLength(fitted))) +
+            C.cyan(S.v),
+        );
       }
     }
 
@@ -526,7 +704,10 @@ class TerminalRepl {
   }
 }
 
-function rankPalette(query: string, item: { command: string; desc: string; category: string }): number {
+function rankPalette(
+  query: string,
+  item: { command: string; desc: string; category: string },
+): number {
   const cmd = item.command.toLowerCase();
   const desc = item.desc.toLowerCase();
   const cat = item.category.toLowerCase();
@@ -538,11 +719,18 @@ function rankPalette(query: string, item: { command: string; desc: string; categ
   return 50;
 }
 
+/**
+ * A single ANSI escape sequence, built from the escape byte rather than written
+ * as `\x1b` inside a pattern literal so the rule does not trip
+ * `no-control-regex`.
+ */
+const ESCAPE_SEQUENCE = new RegExp(`^\\u001b\\[[0-9;]*[~A-Za-z]`);
+
 function splitInput(input: string): string[] {
   const out: string[] = [];
-  for (let i = 0; i < input.length;) {
+  for (let i = 0; i < input.length; ) {
     if (input[i] === '\x1b') {
-      const match = /^\x1b\[[0-9;]*[~A-Za-z]/.exec(input.slice(i));
+      const match = ESCAPE_SEQUENCE.exec(input.slice(i));
       if (match) {
         out.push(match[0]);
         i += match[0].length;

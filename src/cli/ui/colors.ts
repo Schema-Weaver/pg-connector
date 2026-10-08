@@ -118,6 +118,7 @@ export function truncateAnsi(str: string, maxWidth: number, suffix = '...'): str
 
   for (let i = 0; i < str.length;) {
     if (str[i] === '\x1b') {
+      // eslint-disable-next-line no-control-regex -- matching ANSI escape sequences is the intent
       const match = /^\x1b\[[0-9;?]*[ -/]*[@-~]/.exec(str.slice(i));
       if (match) {
         output += match[0];

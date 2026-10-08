@@ -27,11 +27,15 @@ export async function runDoctor(args: string[], opts: DoctorOptions = {}): Promi
 
   try {
     machineConfig = loadMachineConfig();
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   try {
     databasesConfig = loadDatabasesConfig();
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   const ctx: DoctorContext = {
     swAgentDir,
@@ -58,7 +62,9 @@ export async function runDoctor(args: string[], opts: DoctorOptions = {}): Promi
 
   console.log();
   if (hasFail) {
-    console.log(`  ${C.red(S.cross)} ${C.brightRed('Some checks failed. Please fix the issues above.')}`);
+    console.log(
+      `  ${C.red(S.cross)} ${C.brightRed('Some checks failed. Please fix the issues above.')}`,
+    );
   } else if (hasWarn) {
     console.log(`  ${C.yellow(S.warning)} ${C.yellow('Some checks passed with warnings.')}`);
   } else {
@@ -79,7 +85,9 @@ export async function runDoctor(args: string[], opts: DoctorOptions = {}): Promi
     const applied = fixes.filter((f) => f.applied).length;
     console.log();
     if (applied > 0) {
-      console.log(`  ${C.green(S.check)} Applied ${C.white(String(applied))} fix(es). Re-run ${C.cyan('doctor')} to verify.`);
+      console.log(
+        `  ${C.green(S.check)} Applied ${C.white(String(applied))} fix(es). Re-run ${C.cyan('doctor')} to verify.`,
+      );
     } else {
       console.log(`  ${C.dim('Nothing to fix — environment is already clean.')}`);
     }

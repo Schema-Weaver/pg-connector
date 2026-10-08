@@ -1,4 +1,5 @@
 import { findDbEntry, loadDbConfig } from '../../config/db-config';
+import { redactSecrets } from '../../config/schema';
 import { createDbPool } from './db-query';
 import { isReplMode } from '../prompt';
 import { C, S, check, warn, terminalWidth, truncateAnsi } from '../ui';
@@ -19,7 +20,9 @@ export async function runDbShow(args: string[]): Promise<void> {
     console.log(`  ${C.yellow('Usage:')} ${C.white('db show <alias>')} [options]`);
     const all = loadDbConfig();
     if (all.length > 0) {
-      console.log(`  ${C.dim('Configured databases:')} ${all.map((d) => C.cyan(d.db_alias)).join(', ')}`);
+      console.log(
+        `  ${C.dim('Configured databases:')} ${all.map((d) => C.cyan(d.db_alias)).join(', ')}`,
+      );
     }
     console.log();
     exit_(1);
@@ -31,7 +34,9 @@ export async function runDbShow(args: string[]): Promise<void> {
     console.log(`  ${C.red(S.cross)} Database "${C.white(alias)}" not found.`);
     const all = loadDbConfig();
     if (all.length > 0) {
-      console.log(`  ${C.dim('Available databases:')} ${all.map((d) => C.cyan(d.db_alias)).join(', ')}`);
+      console.log(
+        `  ${C.dim('Available databases:')} ${all.map((d) => C.cyan(d.db_alias)).join(', ')}`,
+      );
     }
     console.log();
     exit_(1);
@@ -56,9 +61,15 @@ export async function runDbShow(args: string[]): Promise<void> {
     } finally {
       await pool.end();
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
     connected = false;
-    connError = err?.message || String(err);
+    // A thrown value is not guaranteed to be an Error, and a connection
+    // failure is only ever reported as text.
+    const message =
+      err instanceof Error
+        ? err.message
+        : (err as { message?: string } | null | undefined)?.message;
+    connError = redactSecrets(message || String(err), entry.password_stored);
   }
 
   if (isJson) {
@@ -72,6 +83,7 @@ export async function runDbShow(args: string[]): Promise<void> {
           database: entry.database,
           user: entry.user,
           password_type: entry.password_env ? 'env' : 'stored',
+          password_at_rest: entry.password_env ? 'environment_variable' : 'aes_256_gcm_envelope',
           password_env: entry.password_env || null,
           ssl_mode: entry.ssl_mode,
           ssl_root_cert: entry.ssl_root_cert || null,
@@ -83,8 +95,8 @@ export async function runDbShow(args: string[]): Promise<void> {
           error: connError || null,
         },
         null,
-        2
-      )
+        2,
+      ),
     );
     exit_(0);
   }
@@ -110,7 +122,7 @@ export async function runDbShow(args: string[]): Promise<void> {
       'Password',
       entry.password_env
         ? C.green(`Environment variable ($${entry.password_env})`)
-        : C.yellow('Stored locally (encrypted)'),
+        : C.yellow('Stored locally as AES-256-GCM ciphertext'),
     ],
     ['SSL Mode', entry.ssl_mode === 'disable' ? C.dim('disabled') : C.yellow(entry.ssl_mode)],
     ['SSL Root Cert', entry.ssl_root_cert ? C.white(entry.ssl_root_cert) : C.dim('none')],

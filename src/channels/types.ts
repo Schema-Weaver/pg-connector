@@ -1,4 +1,4 @@
-import { AgentMessage } from '../protocol/envelope';
+import { AgentMessage, Role } from '../protocol/envelope';
 
 /**
  * State of the wake channel (SSE).
@@ -8,6 +8,28 @@ import { AgentMessage } from '../protocol/envelope';
  * - error: connection failed, will retry
  */
 export type WakeChannelState = 'disconnected' | 'connecting' | 'connected' | 'error';
+
+/**
+ * Per-session envelope authentication policy.
+ *
+ * Supplied by the daemon from machine config; every field is optional and every
+ * default lives in `src/protocol/constants.ts` so the policy has exactly one
+ * definition. Nothing here can turn the negotiated-role check or the replay
+ * check off.
+ */
+export interface EnvelopeAuthPolicy {
+  /**
+   * Reject inbound envelopes that carry no per-session MAC. Defaults to
+   * ENVELOPE_MAC_REQUIRED_DEFAULT (true).
+   */
+  requireMac?: boolean;
+  /**
+   * Local ceiling: the highest role the relay may negotiate for this session,
+   * regardless of what it asks for. Defaults to
+   * ENVELOPE_MAX_NEGOTIABLE_ROLE_DEFAULT.
+   */
+  maxNegotiableRole?: Role;
+}
 
 /**
  * State of the data channel (WSS).
@@ -51,6 +73,16 @@ export interface WakeEvent {
   data_channel_token: string;
   /** When data_channel_token expires (epoch ms). */
   data_channel_token_expires_at: number;
+  /**
+   * Roles the cloud agreed this session may act as. The connector intersects
+   * this with its own local ceiling and rejects every inbound envelope whose
+   * `user.role` is not in the result, so the relay cannot mint a role after the
+   * fact.
+   *
+   * Omitting this field is not a way to get "any role": an absent or empty list
+   * yields an empty permitted set and every envelope is rejected.
+   */
+  allowed_roles?: Role[];
 }
 
 /**
@@ -77,4 +109,19 @@ export interface AgentSessionState {
   wake_connected_at?: number;
   /** Epoch ms of last successful data channel open. */
   data_opened_at?: number;
+  /** Roles negotiated for the current data-channel session. Empty = none permitted. */
+  negotiated_roles: Role[];
+  /** True once a per-session envelope MAC key has been derived for the open channel. */
+  envelope_mac_active: boolean;
+  /** Inbound envelopes dropped by envelope authentication since start. */
+  envelope_authn_failures: number;
+  /** Epoch ms of the last inbound envelope dropped by envelope authentication. */
+  last_envelope_authn_failure_at?: number;
+  /**
+   * Wake events that were permitted to take over the data channel (audit M-15).
+   * Every increment is also written to the audit sink as a security event.
+   */
+  session_replacements: number;
+  /** Wake events refused because they named a different browser session. */
+  session_replacement_rejections: number;
 }

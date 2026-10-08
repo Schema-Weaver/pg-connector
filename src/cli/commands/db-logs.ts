@@ -38,7 +38,9 @@ export async function runDbLogs(args: string[], opts: LogsOptions = {}): Promise
     console.log(`  ${C.yellow('Usage:')} ${C.white('db logs <alias>')} [options]`);
     const all = loadDbConfig();
     if (all.length > 0) {
-      console.log(`  ${C.dim('Available databases:')} ${all.map((d) => C.cyan(d.db_alias)).join(', ')}`);
+      console.log(
+        `  ${C.dim('Available databases:')} ${all.map((d) => C.cyan(d.db_alias)).join(', ')}`,
+      );
     }
     console.log();
     exit_(1);
@@ -50,7 +52,9 @@ export async function runDbLogs(args: string[], opts: LogsOptions = {}): Promise
     console.log(`  ${C.red(S.cross)} Database alias "${C.white(alias)}" not found.`);
     const all = loadDbConfig();
     if (all.length > 0) {
-      console.log(`  ${C.dim('Available databases:')} ${all.map((d) => C.cyan(d.db_alias)).join(', ')}`);
+      console.log(
+        `  ${C.dim('Available databases:')} ${all.map((d) => C.cyan(d.db_alias)).join(', ')}`,
+      );
     }
     console.log();
     exit_(1);
@@ -59,7 +63,9 @@ export async function runDbLogs(args: string[], opts: LogsOptions = {}): Promise
   const isJson = args.includes('--json') || args.includes('-j');
   if (!isJson) {
     console.log();
-    console.log(`  ${C.bold(C.brand('Database Logs'))} ${C.dim('—')} ${C.cyan(alias)} ${C.dim(`(project: ${entry.project_name}, db: ${entry.database})`)}`);
+    console.log(
+      `  ${C.bold(C.brand('Database Logs'))} ${C.dim('—')} ${C.cyan(alias)} ${C.dim(`(project: ${entry.project_name}, db: ${entry.database})`)}`,
+    );
     console.log();
   }
 

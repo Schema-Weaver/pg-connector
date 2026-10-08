@@ -15,6 +15,155 @@ export interface AuditLogFilter {
   limit?: number;
 }
 
+/** Whole-log read result, used by chain verification. */
+export interface AuditLogReadResult {
+  /** Log files in chronological order (oldest archive first, active file last). */
+  files: string[];
+  /** Every parsed record, oldest first. */
+  events: AuditEvent[];
+  /** Log files that exist but could not be read. */
+  unreadableFiles: string[];
+  /** Lines that are not parseable JSON — corruption or injected content. */
+  malformedLines: number;
+}
+
+/**
+ * Mode for the audit **directory**. A directory needs the execute bit to be
+ * traversable; creating one with a regular file's mode (0o600) makes every
+ * stat/open/readdir inside it fail with EACCES, which is how a clean install
+ * ended up with no audit trail at all.
+ */
+export const AUDIT_DIR_MODE = 0o700;
+
+/** Mode for the audit log files themselves: read/write for the owner only. */
+export const AUDIT_FILE_MODE = 0o600;
+
+function posixModes(): boolean {
+  return process.platform !== 'win32';
+}
+
+/**
+ * Repairs an audit directory left with a mode that cannot be traversed.
+ *
+ * `fs.mkdir({ recursive: true })` is a no-op on an existing directory, so a
+ * directory created earlier with the wrong mode stays wrong and every later
+ * append keeps failing EACCES. The explicit chmod is what makes an
+ * already-broken install repair itself.
+ *
+ * @returns true when the mode had to be corrected.
+ */
+export async function repairAuditDirMode(
+  dir: string,
+  mode: number = AUDIT_DIR_MODE,
+): Promise<boolean> {
+  if (!posixModes()) return false;
+  let st;
+  try {
+    st = await fs.promises.stat(dir);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw err;
+  }
+  if (!st.isDirectory()) {
+    throw new Error(`audit path exists but is not a directory: ${dir}`);
+  }
+  if ((st.mode & 0o777) === mode) return false;
+  await fs.promises.chmod(dir, mode);
+  return true;
+}
+
+/**
+ * Ensures the audit directory exists and is traversable, creating it at mode
+ * 0o700 and repairing a pre-existing wrong mode.
+ *
+ * Idempotent and safe to call from setup, startup, append and repair paths:
+ *
+ * ```ts
+ * await ensureAuditDir(path.join(getSwAgentDir(), 'audit'));
+ * ```
+ *
+ * @returns true when the directory had to be created or its mode corrected.
+ */
+export async function ensureAuditDir(
+  dir: string,
+  opts: { dirMode?: number } = {},
+): Promise<boolean> {
+  const dirMode = opts.dirMode ?? AUDIT_DIR_MODE;
+  let existed = true;
+  try {
+    await fs.promises.stat(dir);
+  } catch {
+    existed = false;
+  }
+  await fs.promises.mkdir(dir, { recursive: true, mode: dirMode });
+  const repaired = await repairAuditDirMode(dir, dirMode);
+  return !existed || repaired;
+}
+
+/** Result of {@link probeAuditDir}. */
+export interface AuditDirProbe {
+  ok: boolean;
+  dir: string;
+  dirMode: number;
+  /** True when {@link repairAuditDirMode} had to change the mode. */
+  repaired: boolean;
+  reason?: string;
+}
+
+/**
+ * Startup gate for the audit path: creates/repairs the directory, then proves a
+ * real write + fsync succeeds. "Audit loss must not be silent" is only
+ * enforceable if startup refuses to claim the log is fine without trying it.
+ */
+export async function probeAuditDir(
+  dir: string,
+  opts: { dirMode?: number; fileMode?: number } = {},
+): Promise<AuditDirProbe> {
+  const dirMode = opts.dirMode ?? AUDIT_DIR_MODE;
+  const fileMode = opts.fileMode ?? AUDIT_FILE_MODE;
+
+  let repaired = false;
+  let actualMode = dirMode;
+  try {
+    repaired = await repairAuditDirMode(dir, dirMode).catch(() => false);
+    const st = await fs.promises.stat(dir);
+    if (!st.isDirectory()) {
+      return { ok: false, dir, dirMode, repaired, reason: `audit path is not a directory: ${dir}` };
+    }
+    actualMode = st.mode & 0o777;
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      dir,
+      dirMode,
+      repaired,
+      reason: `cannot create audit directory: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  const probe = path.join(dir, '.write_test');
+  try {
+    const fd = await fs.promises.open(probe, 'w', fileMode);
+    try {
+      await fd.writeFile('audit preflight');
+      await fd.sync();
+    } finally {
+      await fd.close();
+    }
+    await fs.promises.unlink(probe);
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      dir,
+      dirMode: actualMode,
+      repaired,
+      reason: `audit directory is not writable: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  return { ok: true, dir, dirMode: actualMode, repaired };
+}
+
 /**
  * Returns audit log files in strict chronological order:
  * audit-N.jsonl (oldest archive) -> ... -> audit-1.jsonl (most recent archive) -> audit.jsonl (active file)
@@ -97,6 +246,52 @@ function stripBom(content: string): string {
 }
 
 /**
+ * Reads every record of the audit log in strict chronological order across all
+ * rotated files, with no limit.
+ *
+ * Chain verification must see the log as one sequence: verifying each rotated
+ * file in isolation reports every file that begins mid-chain as broken, which is
+ * what made routine rotation look like tampering.
+ */
+export async function readAuditLogChronological(auditDir: string): Promise<AuditLogReadResult> {
+  const result: AuditLogReadResult = {
+    files: [],
+    events: [],
+    unreadableFiles: [],
+    malformedLines: 0,
+  };
+
+  const files = await getAuditFilesChronological(auditDir);
+  result.files = files;
+
+  for (const file of files) {
+    let content: string;
+    try {
+      content = await fs.promises.readFile(file, 'utf8');
+    } catch {
+      result.unreadableFiles.push(file);
+      continue;
+    }
+    const lines = content.split('\n').filter((l) => l.trim().length > 0);
+    for (let i = 0; i < lines.length; i++) {
+      const raw = i === 0 ? stripBom(lines[i]) : lines[i];
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          result.malformedLines++;
+          continue;
+        }
+        result.events.push(parsed as AuditEvent);
+      } catch {
+        result.malformedLines++;
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
  * Checks whether an event satisfies the given filter.
  */
 export function eventMatchesFilter(
@@ -104,7 +299,7 @@ export function eventMatchesFilter(
   filter: AuditLogFilter,
   sinceTs?: number | null,
   untilTs?: number | null,
-  searchLower?: string
+  searchLower?: string,
 ): boolean {
   if (filter.project && event.project.toLowerCase() !== filter.project.toLowerCase()) {
     return false;
@@ -160,7 +355,7 @@ export function eventMatchesFilter(
  */
 export async function readAuditEvents(
   auditDir: string,
-  filter: AuditLogFilter = {}
+  filter: AuditLogFilter = {},
 ): Promise<AuditEvent[]> {
   const isAsc = filter.order === 'asc';
   const limit = filter.limit && filter.limit > 0 ? filter.limit : 50;
