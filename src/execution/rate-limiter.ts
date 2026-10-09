@@ -75,21 +75,21 @@ const MAX_INTROSPECT_BYTES = 268_435_456;
  * and the most valuable one to an attacker exfiltrating a schema.
  */
 export const DEFAULT_RATE_LIMIT_POLICIES: Record<RateLimitedAction, RateLimitPolicy> = {
-  ping: { burst: 120, per_second: 30 },
-  query: { burst: 60, per_second: 10 },
-  stream_query: { burst: 30, per_second: 5 },
-  migration_run: { burst: 6, per_second: 0.2 },
-  cancel: { burst: 30, per_second: 5 },
-  introspect: { burst: 4, per_second: 0.1 },
-  event: { burst: 60, per_second: 10 },
-  other: { burst: 60, per_second: 10 },
+  ping: { burst: 240, per_second: 60 },
+  query: { burst: 300, per_second: 100 },
+  stream_query: { burst: 60, per_second: 20 },
+  migration_run: { burst: 20, per_second: 1 },
+  cancel: { burst: 60, per_second: 20 },
+  introspect: { burst: 30, per_second: 5 },
+  event: { burst: 120, per_second: 30 },
+  other: { burst: 120, per_second: 30 },
 };
 
 /** Ceiling for everything the connector does, whatever the caller's identity. */
-export const DEFAULT_GLOBAL_POLICY: RateLimitPolicy = { burst: 240, per_second: 40 };
+export const DEFAULT_GLOBAL_POLICY: RateLimitPolicy = { burst: 1000, per_second: 200 };
 
-export const DEFAULT_MAX_INFLIGHT = 32;
-export const DEFAULT_MAX_INFLIGHT_PER_DB = 8;
+export const DEFAULT_MAX_INFLIGHT = 128;
+export const DEFAULT_MAX_INFLIGHT_PER_DB = 64;
 
 /**
  * `cancel` is exempt from the concurrency cap and `ping` from both counters.

@@ -1,6 +1,6 @@
 {
   "name": "@schema-weaver/pg-connector",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Bridge between the Schema Weaver browser IDE and your PostgreSQL databases. Runs near the DB, never exposes credentials, executes queries and migrations on demand.",
   "license": "MIT",
   "author": "Schema Weaver <vivek@schemaweaver.dev>",
