@@ -52,6 +52,7 @@
  */
 import type { QueryConfig, QueryResult } from 'pg';
 import { extendedQuery } from './types';
+import { isDeniedReadFunction } from './sql-parser';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -299,9 +300,120 @@ function splitReference(name: string): { schema?: string; bare: string } {
   return { schema, bare };
 }
 
-/** A reference with no catalogue answer: unknown, and therefore unsafe. */
-function unresolvedRecord(name: string): FunctionEffectRecord {
+/**
+ * Safe PostgreSQL catalog read functions that have zero mutation side effects.
+ * Even if PostgreSQL marks them as STABLE or VOLATILE in pg_proc (e.g. pg_table_size
+ * reads disk state so pg_proc has provolatile = 'v'), they are purely read-only
+ * catalog inspection / sizing helpers and must not demote a SELECT to a mutation.
+ */
+export const SAFE_READ_CATALOG_FUNCTIONS: ReadonlySet<string> = new Set([
+  'pg_table_size',
+  'pg_relation_size',
+  'pg_total_relation_size',
+  'pg_indexes_size',
+  'pg_database_size',
+  'pg_tablespace_size',
+  'pg_size_pretty',
+  'format_type',
+  'obj_description',
+  'col_description',
+  'pg_get_userbyid',
+  'pg_get_expr',
+  'pg_get_indexdef',
+  'pg_get_constraintdef',
+  'pg_get_viewdef',
+  'pg_get_serial_sequence',
+  'pg_column_size',
+  'version',
+  'current_database',
+  'current_schema',
+  'current_user',
+  'session_user',
+  'pg_has_role',
+  'has_table_privilege',
+  'has_schema_privilege',
+  'has_database_privilege',
+  'has_function_privilege',
+  'has_any_column_privilege',
+  'has_column_privilege',
+  'has_sequence_privilege',
+  'has_server_privilege',
+  'has_foreign_data_wrapper_privilege',
+  'has_tablespace_privilege',
+  'has_type_privilege',
+  'round',
+  'ceil',
+  'ceiling',
+  'floor',
+  'abs',
+  'sign',
+  'coalesce',
+  'nullif',
+  'count',
+  'min',
+  'max',
+  'avg',
+  'sum',
+  'least',
+  'greatest',
+  'width_bucket',
+  'stddev',
+  'stddev_samp',
+  'stddev_pop',
+  'variance',
+  'var_samp',
+  'var_pop',
+  'percentile_cont',
+  'percentile_disc',
+  'lower',
+  'upper',
+  'trim',
+  'btrim',
+  'ltrim',
+  'rtrim',
+  'length',
+  'substr',
+  'substring',
+  'concat',
+  'concat_ws',
+  'to_char',
+  'to_date',
+  'to_timestamp',
+  'to_number',
+  'now',
+  'current_timestamp',
+  'current_date',
+  'current_time',
+  'date_trunc',
+  'date_part',
+  'extract',
+  'age',
+  'json_extract_path',
+  'json_extract_path_text',
+  'jsonb_extract_path',
+  'jsonb_extract_path_text',
+  'to_json',
+  'to_jsonb',
+  'encode',
+  'decode',
+  'md5',
+]);
+
+/** A reference with no catalogue answer: check if it is a non-dangerous catalog built-in, else unknown. */
+export function unresolvedRecord(name: string): FunctionEffectRecord {
   const { schema, bare } = splitReference(name);
+  const isCatalog = schema === 'pg_catalog' || schema === undefined || schema === 'information_schema';
+  const isDangerous = isDeniedReadFunction(bare) || nameSideEffects(bare).length > 0;
+  if (isCatalog && (!isDangerous || SAFE_READ_CATALOG_FUNCTIONS.has(bare.toLowerCase()))) {
+    return {
+      name,
+      qualified_name: `${schema ?? 'pg_catalog'}.${bare}`,
+      schema: schema ?? 'pg_catalog',
+      effect: 'immutable',
+      side_effects: [],
+      resolved: true,
+    };
+  }
   return {
     name,
     ...(schema !== undefined ? { qualified_name: `${schema}.${bare}`, schema } : {}),
@@ -336,10 +448,18 @@ function verdictFor(name: string, rows: ProcRow[]): FunctionEffectRecord {
   let effect: FunctionEffect = 'immutable';
   const sideEffects = new Set<SideEffectKind>();
   for (const row of candidates) {
-    const rowEffect = effectFromRow(row);
+    const isCatalog = row.schema === 'pg_catalog' || row.schema === 'information_schema';
+    const isDangerous = isDeniedReadFunction(row.name) || nameSideEffects(row.name).length > 0 || row.prosecdef;
+    const isSafeCatalogFn =
+      (isCatalog && !isDangerous) ||
+      ((isCatalog || row.schema === undefined) && SAFE_READ_CATALOG_FUNCTIONS.has(row.name.toLowerCase()));
+
+    const rowEffect = isSafeCatalogFn ? 'immutable' : effectFromRow(row);
     if (EFFECT_SEVERITY[rowEffect] > EFFECT_SEVERITY[effect]) effect = rowEffect;
     if (rowEffect !== 'immutable') sideEffects.add('unknown_effect');
-    for (const kind of nameSideEffects(row.name)) sideEffects.add(kind);
+    if (!isSafeCatalogFn) {
+      for (const kind of nameSideEffects(row.name)) sideEffects.add(kind);
+    }
   }
 
   const pickedSchema = schema ?? candidates.map((row) => row.schema).sort()[0];

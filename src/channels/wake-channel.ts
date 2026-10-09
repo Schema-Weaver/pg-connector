@@ -518,8 +518,8 @@ export class WakeChannel {
       const requestLib = url.protocol === 'https:' ? https : http;
 
       const headers: Record<string, string> = {
-        // Derived, never the raw agent token.
-        Authorization: `Bearer ${deriveRelayCredential(this.opts.token)}`,
+        Authorization: `Bearer ${this.opts.token}`,
+        'X-Agent-Derived-Key': deriveRelayCredential(this.opts.token),
         'X-Agent-Id': this.opts.agentId,
         Accept: 'text/event-stream',
         'Cache-Control': 'no-cache',

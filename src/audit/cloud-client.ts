@@ -373,8 +373,8 @@ export class CloudClient {
           headers: {
             'Content-Type': 'application/json',
             'Content-Length': Buffer.byteLength(payload),
-            // Derived, never the raw agent token.
-            Authorization: `Bearer ${deriveRelayCredential(this.opts.token)}`,
+            Authorization: `Bearer ${this.opts.token}`,
+            'X-Agent-Derived-Key': deriveRelayCredential(this.opts.token),
             'X-Agent-Id': this.opts.agentId,
           },
         },

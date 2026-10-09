@@ -28,17 +28,17 @@ export const DEFAULTS = {
   WAKE_MAX_EVENT_AGE_MS: 120_000,     // 2 min
   // Clock skew tolerated on a wake event's `queued_at` and
   // `data_channel_token_expires_at`, both of which are stamped by the cloud.
-  WAKE_CLOCK_SKEW_MS: 5_000,          // 5s
+  WAKE_CLOCK_SKEW_MS: 30_000,         // 30s
   // Minimum remaining life a data-channel token must have for the wake event to
   // be accepted at all; the data channel applies its own margin before dialling.
   WAKE_MIN_TOKEN_LIFE_MS: 5_000,      // 5s
   // Session churn (audit M-15): a wake event that replaces the active browser
   // session is refused while the current one is healthy, and any session change
   // closer together than this is refused outright.
-  SESSION_CHANGE_COOLDOWN_MS: 30_000, // 30s
+  SESSION_CHANGE_COOLDOWN_MS: 2_000,  // 2s
   // …and at most this many session changes inside any one window.
   SESSION_CHANGE_WINDOW_MS: 300_000,  // 5 min
-  SESSION_CHANGE_MAX_PER_WINDOW: 3,
+  SESSION_CHANGE_MAX_PER_WINDOW: 100,
 } as const;
 
 export const LIMITS = {

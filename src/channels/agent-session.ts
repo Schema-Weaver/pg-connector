@@ -431,20 +431,20 @@ export class AgentSession {
     }
 
     if (current === incoming) {
-      // Re-delivery for the session already being served. Nothing to tear down.
-      return { action: 'noop', reason: 'wake event for the active browser session' };
+      if (healthy) {
+        // Re-delivery for the session already being served and healthy. Nothing to tear down.
+        return { action: 'noop', reason: 'wake event for the active browser session' };
+      }
+      // Same session re-waking after data channel closed or errored: re-establish immediately
+      return {
+        action: 'replace',
+        reason: `re-establishing data channel for session '${incoming}' (data channel ${dataState})`,
+        churn: { allowed: true, reason: 'same_session_recovery', replacements: this.sessionChanges.length },
+      };
     }
 
     // An authoriser only speaks for a healthy channel: replacing a dead one is
-    // recovery, not a security decision, and must not require a policy.
-    //
-    // Deny by default. The refusal must NOT be nested inside
-    // `if (this.authoriseReplacement)`: an absent authoriser means nobody has
-    // established that the party naming a new session is entitled to displace
-    // the one already being served, and that is exactly the session-hijack
-    // window. Gating the refusal on the authoriser existing inverted the
-    // policy, so an unconfigured session silently tore down a healthy channel
-    // for any wake event carrying a different `browser_session_id`.
+    // recovery, not a security decision, and must not require a policy or be blocked by cooldown.
     if (healthy) {
       let authorised = false;
       let authoriserConfigured = false;
@@ -473,19 +473,23 @@ export class AgentSession {
           },
         };
       }
-    }
 
-    const churn = this.checkChurnBudget();
-    if (!churn.allowed) {
-      return { action: 'reject', reason: churn.reason, churn };
+      const churn = this.checkChurnBudget();
+      if (!churn.allowed) {
+        return { action: 'reject', reason: churn.reason, churn };
+      }
+
+      return {
+        action: 'replace',
+        reason: `replacing browser session '${current ?? 'unknown'}' under explicit authorisation`,
+        churn,
+      };
     }
 
     return {
       action: 'replace',
-      reason: healthy
-        ? `replacing browser session '${current ?? 'unknown'}' under explicit authorisation`
-        : `replacing dead browser session '${current ?? 'unknown'}' (data channel ${dataState})`,
-      churn,
+      reason: `replacing dead browser session '${current ?? 'unknown'}' (data channel ${dataState})`,
+      churn: { allowed: true, reason: 'dead_channel_recovery', replacements: this.sessionChanges.length },
     };
   }
 

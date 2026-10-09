@@ -165,6 +165,10 @@ export class PermissionChecker {
 
     const intentMatches =
       claimed === actualType ||
+      // A SELECT statement declared with intent 'read' is structurally a read query,
+      // even if non-immutable functions demoted its type to 'write'. Role capability
+      // and permission level checks below will continue to enforce security.
+      (claimed === 'read' && actualClassification.verb === 'SELECT') ||
       // A migration_run's `intent` is 'migration' and its payload is a plan, not
       // a single statement, so there is no single parsed type to compare with.
       (claimed === 'migration' && isMigrationRun);

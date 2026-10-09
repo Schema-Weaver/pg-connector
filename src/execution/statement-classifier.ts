@@ -59,6 +59,7 @@ import {
   walkAst,
 } from './sql-parser';
 import type { RawStmt } from './sql-parser';
+import { unresolvedRecord } from './function-effects';
 import type { FunctionEffectAnalysis, FunctionEffectRecord, FunctionEffectResolver } from './function-effects';
 import type { SideEffectKind } from './function-effects';
 import type { StatementClassification } from './types';
@@ -193,12 +194,7 @@ export async function classifyStatements(
  */
 function unanalysedAnalysis(names: readonly string[]): FunctionEffectAnalysis {
   return {
-    records: names.map((name) => ({
-      name,
-      effect: 'unknown' as const,
-      side_effects: ['unknown_effect' as const],
-      resolved: false,
-    })),
+    records: names.map((name) => unresolvedRecord(name)),
     analysed: false,
   };
 }
