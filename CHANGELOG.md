@@ -5,6 +5,20 @@ All notable changes to `@schema-weaver/pg-connector` are documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2] - 2026-11-05
+
+### Fixed
+
+- **Headless Linux & EC2 Clipboard Support**: Prevent CLI initialization crash (`spawn xclip ENOENT`) on headless systems. Added automatic display detection (`isHeadlessLinux`), pre-execution binary PATH validation (`isCommandAvailable`), multi-platform utility support (`clip`, `pbcopy`, `wl-copy`, `xclip`, `xsel`), and graceful fallback to manual token copying.
+- **Initialization Error Resilience**: Wrapped clipboard execution in a non-blocking safe block, ensuring token generation, configuration persistence, and service startup continue uninterrupted even if clipboard operations fail.
+
+## [2.0.1] - 2026-10-09
+
+### Changed
+
+- **Rate Limiting**: Increased concurrency and burst limits for seamless data exploration in browser IDE.
+- **Permissions & Security**: Permitted read-only catalog functions, improved session wake recovery, and aligned auth headers.
+
 ## [2.0.0] - 2026-10-08
 
 ### Added
@@ -18,4 +32,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CLI Suite**: Full command-line interface (`pg-connector` / `sw-agent` / `schemaweaver`) with interactive REPL, database management (`db add`, `db list`, `db test`, `db query`, `db connect`), daemon lifecycle (`start`, `stop`, `status`), and diagnostic tools (`doctor`, `debug`).
 - **Programmatic SDK**: Fully typed Node.js/TypeScript exports for `PoolManager`, `QueryRunner`, `MigrationRunner`, `AgentSession`, and `Dispatcher`.
 
+[2.0.2]: https://github.com/Schema-Weaver/pg-connector/compare/v2.0.1...v2.0.2
+[2.0.1]: https://github.com/Schema-Weaver/pg-connector/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/Schema-Weaver/pg-connector/releases/tag/v2.0.0

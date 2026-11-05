@@ -13,8 +13,8 @@ import { isSecureCloudUrl } from '../../config/schema';
 import { getMachineConfigPath, getSwAgentDir } from '../../config/paths';
 import { generateAgentToken } from '../../config/token';
 import { ensureAuditDir } from '../../audit/files';
-import { C, S, separator, check, arrow, box } from '../ui';
-import { copyToClipboard } from '../ui/clipboard';
+import { C, S, separator, check, arrow, box, warn } from '../ui';
+import { copyToClipboard, ClipboardResult } from '../ui/clipboard';
 
 function exit_(code: number): never {
   if (isReplMode()) {
@@ -112,6 +112,10 @@ export async function runInit(_args: string[]): Promise<void> {
 
   config.log_level = logLevel as MachineConfig['log_level'];
 
+  console.log(`  ${check('Agent ID generated')}`);
+  console.log(`  ${check('Agent token generated')}`);
+  console.log();
+
   // Summary — Agent ID and Token each in their own highlighted box.
   console.log(separator('Summary', 50));
   console.log();
@@ -137,14 +141,20 @@ export async function runInit(_args: string[]): Promise<void> {
   );
   console.log();
 
-  // Attempt clipboard copy of the token.
-  const clip = copyToClipboard(token);
+  // Attempt clipboard copy of the token (best-effort, never crashes).
+  let clip: ClipboardResult = { copied: false, method: null };
+  try {
+    clip = copyToClipboard(token);
+  } catch {
+    clip = { copied: false, method: null };
+  }
+
   if (clip.copied) {
     console.log(
       `  ${C.green(S.check)} ${C.brightGreen('Token copied to clipboard')} ${C.dim(`(via ${clip.method})`)}`,
     );
   } else {
-    console.log(`  ${C.dim('Tip:')} ${C.white('Select and copy the token above manually.')}`);
+    console.log(`  ${warn(C.brightYellow('Clipboard unavailable. Copy the token manually.'))}`);
   }
 
   console.log();

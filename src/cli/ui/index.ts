@@ -4,5 +4,7 @@ export { box, divider, separator, indent, bullet, check, cross, warn, info, arro
 export { renderTable, renderSimpleTable } from './table';
 export { createSpinner, withSpinner } from './spinner';
 export { terminalWidth, clampWidth, clearScreen, clearLine, fitLine, indentLines } from './terminal';
+export { copyToClipboard, copyToClipboardAsync, isClipboardAvailable, isHeadlessLinux, isCommandAvailable, getClipboardCandidates } from './clipboard';
+export type { ClipboardResult, ClipboardCommand, ClipboardOptions } from './clipboard';
 export type { TableColumn, TableOptions } from './table';
 export type { Spinner } from './spinner';

@@ -23,7 +23,22 @@ export function getReplInterface(): readline.Interface | null {
   return rl;
 }
 
+export interface PromptOverrides {
+  ask?: (question: string, defaultValue?: string) => Promise<string>;
+  askChoice?: (question: string, choices: string[], defaultValue?: string) => Promise<string>;
+  askConfirm?: (question: string, defaultValue: boolean) => Promise<boolean>;
+}
+
+let promptOverrides: PromptOverrides | null = null;
+
+export function setPromptOverrides(overrides: PromptOverrides | null): void {
+  promptOverrides = overrides;
+}
+
 export function ask(question: string, defaultValue?: string): Promise<string> {
+  if (promptOverrides?.ask) {
+    return promptOverrides.ask(question, defaultValue);
+  }
   return new Promise((resolve) => {
     const displayDefault = defaultValue !== undefined ? C.dim(` [${defaultValue}]`) : '';
     const promptText = `${C.brand('?')} ${C.white(question)}${displayDefault} `;
@@ -150,6 +165,9 @@ export async function askChoice(
   choices: string[],
   defaultValue?: string,
 ): Promise<string> {
+  if (promptOverrides?.askChoice) {
+    return promptOverrides.askChoice(question, choices, defaultValue);
+  }
   if (rl) {
     rl.pause();
   }
@@ -167,6 +185,9 @@ export async function askChoice(
 }
 
 export async function askConfirm(question: string, defaultValue: boolean): Promise<boolean> {
+  if (promptOverrides?.askConfirm) {
+    return promptOverrides.askConfirm(question, defaultValue);
+  }
   const displaySuffix = defaultValue ? C.dim(' (Y/n)') : C.dim(' (y/N)');
   for (;;) {
     const ans = await ask(`${question}${displaySuffix}`);
