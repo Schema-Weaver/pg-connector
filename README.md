@@ -205,7 +205,7 @@ pg-connector status
   ──────────────────────────────────────────────────
   Process:           running (PID 4821)
   Uptime:            4h 12m 35s
-  Version:           2.0.3
+  Version:           2.0.4
   Agent ID:          agt_prod-bastion_8f2b1a9c
   Cloud URL:         wss://api.schemaweaver.dev
   Permission Level:  read_only

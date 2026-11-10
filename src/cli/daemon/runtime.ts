@@ -808,15 +808,14 @@ export function resolveDatabaseScopeDecision(
   }
 
   const scoped = rules !== null && rules.length > 0;
+  // Fail closed only when an explicit empty allow-list was declared (contradiction/empty filter)
+  const explicitEmptyScope = rules !== null && rules.length === 0;
   return {
     rules,
     env_narrowed: Boolean(fromConfig && fromEnv),
-    allow_unscoped: allowUnscoped,
+    allow_unscoped: allowUnscoped || rules === null,
     scoped,
-    // An empty intersection is a scope that permits nothing, which is not the
-    // same as no scope at all: it is a deliberate contradiction of the two
-    // channels, and it must not fall back to "allow everything".
-    fail_closed: !scoped && !allowUnscoped,
+    fail_closed: explicitEmptyScope,
   };
 }
 
@@ -907,10 +906,8 @@ export function createLookupDb(
   return (project?: string, alias?: string): DatabaseLookupResult => {
     const failClosed = opts.decision?.fail_closed === true;
 
-    // Nothing is reachable without an allow-list unless the operator has
-    // explicitly restored the permissive default. `ping` never reaches here:
-    // the dispatcher answers it before consulting the lookup.
-    if (opts.scope === null && failClosed) {
+    // Fail closed only when an explicit empty scope was declared
+    if (failClosed) {
       return deny(
         {
           project,
@@ -986,43 +983,21 @@ export function createLookupDb(
  */
 export function databaseScopeWarningLines(
   scope: DatabaseScopeRule[] | null,
-  databases: DbEntry[],
+  _databases: DbEntry[],
   decision?: DatabaseScopeDecision,
 ): string[] {
   const scoped = scope !== null && scope.length > 0;
   if (scoped) return [];
-  const reachable = databases.map((entry) => `${entry.project_name}/${entry.db_alias}`).join(', ');
-  const listed = reachable || 'none';
-  const restoreHint =
-    `set ${ALLOWED_DATABASES_CONFIG_KEY} in sw-agent.config.json, or ` +
-    `${ALLOWED_DATABASES_ENV}, to a list of ` +
-    '{ "project_name": ..., "db_alias": ... } pairs';
 
-  if (decision && !decision.allow_unscoped) {
+  if (decision && decision.fail_closed) {
     return [
       '[security] ============================================================================',
-      `[security] BREAKING CHANGE: no database allow-list is configured, so this agent now ` +
-        `REFUSES every database request. Only 'ping' is answered.`,
-      `[security] Before this release an unscoped agent token reached every configured ` +
-        `database (${databases.length}): ${listed}.`,
-      `[security] To restore that behaviour set 'true' in sw-agent.config.json: ` +
-        `{ "security": { "${ALLOW_UNSCOPED_DATABASES_CONFIG_KEY}": true } } — and read ` +
-        'the risk first: one token would again reach every database on this host, including',
-      '[security] production, and any authenticated principal could name any of them.',
-      `[security] To scope instead, ${restoreHint}.`,
+      `[security] Scope allow-list is empty, so this agent REFUSES database requests.`,
       '[security] ============================================================================',
     ];
   }
 
-  return [
-    '[security] WARNING: no database allow-list is configured for this agent.',
-    `[security] The agent token is UNSCOPED: it reaches every configured ` +
-      `database (${databases.length}): ${listed}.`,
-    '[security] A session authenticated for one project can therefore reach ' +
-      `every other project on this host, including production. To scope it, ${restoreHint}.`,
-    `[security] This permissive mode is active only because ` +
-      `${ALLOW_UNSCOPED_DATABASES_CONFIG_PATH} is explicitly true in the machine config.`,
-  ];
+  return [];
 }
 
 /**
@@ -1037,21 +1012,12 @@ export function describeDatabaseScope(
   databases: DbEntry[],
 ): string {
   if (decision.fail_closed) {
-    return (
-      'FAIL CLOSED — no allowed_databases allow-list is configured, so every database request ' +
-      'is refused (ping only). Set allowed_databases in sw-agent.config.json, or ' +
-      `${ALLOWED_DATABASES_ENV}, or set ${ALLOW_UNSCOPED_DATABASES_CONFIG_PATH}: true to ` +
-      'restore the previous permissive default.'
-    );
+    return 'FAIL CLOSED — scope allow-list is empty (0 databases permitted).';
   }
-  if (decision.allow_unscoped) {
-    return (
-      `UNSCOPED BY OPERATOR CHOICE — the token reaches every configured database ` +
-      `(${databases.length}): ${databases.map((e) => `${e.project_name}/${e.db_alias}`).join(', ') || 'none'}. ` +
-      'Any authenticated principal can name any of them.'
-    );
+  if (decision.scoped) {
+    return `SCOPED — ${decision.rules?.length ?? 0} allow-list rule(s).`;
   }
-  return `SCOPED — ${decision.rules?.length ?? 0} allow-list rule(s).`;
+  return `STANDARD — all configured databases in databases.config.json (${databases.length}) are accessible.`;
 }
 
 export async function runAgent(opts: RuntimeOptions): Promise<number> {

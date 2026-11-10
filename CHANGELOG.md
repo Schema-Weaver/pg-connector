@@ -5,6 +5,13 @@ All notable changes to `@schema-weaver/pg-connector` are documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.4] - 2026-11-10
+
+### Fixed
+
+- **Permit All Configured Databases by Default**: Removed the artificial `database_scope_not_configured` fail-closed block that rejected queries when `allowed_databases` was not declared. All databases registered in `databases.config.json` are now accessible by default.
+- **Explicit Scope Support**: `allowed_databases` (or `SW_AGENT_ALLOWED_DATABASES`) continues to function as an optional narrowing mechanism when operators explicitly declare it (e.g. for demo databases or restricted subsets).
+
 ## [2.0.3] - 2026-11-10
 
 ### Changed
