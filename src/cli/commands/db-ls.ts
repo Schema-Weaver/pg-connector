@@ -91,7 +91,7 @@ export async function runDbLs(args: string[]): Promise<void> {
         ? C.green(db.db_alias)
         : C.red(db.db_alias)
       : C.cyan(db.db_alias),
-    project: C.white(db.project_name),
+    project: db.project_name ? C.white(db.project_name) : C.dim('-'),
     host: `${db.host}:${db.port}`,
     database: C.white(db.database),
     user: C.white(db.user),

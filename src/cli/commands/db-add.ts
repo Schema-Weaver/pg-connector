@@ -13,7 +13,7 @@ import {
   type SecretSource,
 } from '../prompt';
 import { machineConfigExists } from '../../config/machine-config';
-import { addDbEntry, findDbByProject, removeDbEntry, DbEntry } from '../../config/db-config';
+import { addDbEntry, findDbEntry, removeDbEntry, DbEntry } from '../../config/db-config';
 import {
   isValidIdentifier,
   isValidHostname,
@@ -344,10 +344,10 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
       finalPerm = flagPerm as PermissionLevel;
     }
 
-    const existing = findDbByProject(projectName);
+    const existing = findDbEntry(dbAlias);
     if (existing) {
       console.log(
-        `  ${C.red(S.cross)} Project "${projectName}" already has database "${existing.db_alias}". Schema Weaver allows 1 DB per project.`,
+        `  ${C.red(S.cross)} Database alias "${dbAlias}" already exists. Use a different alias or edit the existing entry.`,
       );
       exit_(1);
     }
@@ -443,85 +443,56 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
   console.log(separator('', 50));
   console.log();
 
-  let projectName = '';
-  for (;;) {
-    projectName = await ask('Project name');
-    if (projectName.trim() === '') continue;
-    if (isValidIdentifier(projectName, 64) && !projectName.includes(' ')) {
-      break;
-    }
-    console.log(`  ${C.red(S.cross)} Use letters, numbers, hyphens, underscores only.`);
-  }
-
-  // One-DB-per-project: check before proceeding and offer recovery.
-  const existing = findDbByProject(projectName);
-  if (existing) {
-    console.log();
-    console.log(
-      `  ${C.yellow(S.warning)} Project "${C.white(projectName)}" already has a database:`,
-    );
-    console.log(
-      `    ${C.cyan(existing.db_alias)}  ${C.dim(`${existing.host}:${existing.port}/${existing.database}`)}`,
-    );
-    console.log();
-    console.log(`  ${C.dim('Schema Weaver allows one database per project.')}`);
-    console.log();
-
-    const fix = await askChoice(
-      'What would you like to do?',
-      ['Use a different project name', 'Remove existing and re-add', 'Cancel'],
-      'Use a different project name',
-    );
-
-    if (fix === 'Cancel') {
-      console.log(`  ${C.dim('Aborted.')}`);
-      exit_(0);
-    }
-    if (fix === 'Remove existing and re-add') {
-      const confirm = await askConfirm(
-        C.red(`Remove "${existing.db_alias}" and add a new entry?`),
-        false,
-      );
-      if (!confirm) {
-        console.log(`  ${C.dim('Aborted.')}`);
-        exit_(0);
-      }
-      removeDbEntry(existing.db_alias);
-      console.log(`  ${check(`Removed existing entry ${C.cyan(existing.db_alias)}.`)}`);
-      console.log();
-    } else {
-      console.log();
-      for (;;) {
-        projectName = await ask('Project name');
-        if (
-          projectName.trim() === '' &&
-          isValidIdentifier(projectName, 64) &&
-          !projectName.includes(' ')
-        )
-          continue;
-        if (
-          projectName.trim() !== '' &&
-          isValidIdentifier(projectName, 64) &&
-          !projectName.includes(' ')
-        )
-          break;
-        console.log(`  ${C.red(S.cross)} Use letters, numbers, hyphens, underscores only.`);
-      }
-    }
-  }
-
-  console.log(`  ${check(`Project: ${C.white(projectName)}`)}`);
-  console.log();
-
   let dbAlias = '';
   for (;;) {
     dbAlias = await ask('Database alias');
     if (dbAlias.trim() === '') continue;
-    if (isValidIdentifier(dbAlias, 64) && !dbAlias.includes(' ')) {
-      break;
+    if (!isValidIdentifier(dbAlias, 64) || dbAlias.includes(' ')) {
+      console.log(`  ${C.red(S.cross)} Use letters, numbers, hyphens, underscores only.`);
+      continue;
     }
-    console.log(`  ${C.red(S.cross)} Use letters, numbers, hyphens, underscores only.`);
+
+    const existing = findDbEntry(dbAlias);
+    if (existing) {
+      console.log();
+      console.log(
+        `  ${C.yellow(S.warning)} Database alias "${C.white(dbAlias)}" already exists:`,
+      );
+      console.log(
+        `    ${C.cyan(existing.db_alias)}  ${C.dim(`${existing.host}:${existing.port}/${existing.database}`)}`,
+      );
+      console.log();
+
+      const choice = await askChoice(
+        'What would you like to do?',
+        ['Use a different alias', 'Remove existing and re-add', 'Cancel'],
+        'Use a different alias',
+      );
+
+      if (choice === 'Cancel') {
+        console.log(`  ${C.dim('Aborted.')}`);
+        exit_(0);
+      }
+      if (choice === 'Remove existing and re-add') {
+        const confirm = await askConfirm(
+          C.red(`Remove "${existing.db_alias}" and add a new entry?`),
+          false,
+        );
+        if (!confirm) {
+          console.log(`  ${C.dim('Aborted.')}`);
+          exit_(0);
+        }
+        removeDbEntry(existing.db_alias);
+        console.log(`  ${check(`Removed existing entry ${C.cyan(existing.db_alias)}.`)}`);
+        console.log();
+        break;
+      }
+      continue;
+    }
+    break;
   }
+
+  const projectName = dbAlias;
   console.log(`  ${check(`Alias: ${C.white(dbAlias)}`)}`);
   console.log();
 

@@ -27,7 +27,7 @@ export async function runDbRemove(args: string[]): Promise<void> {
 
   console.log();
   console.log(`  ${C.bold('Remove database')} ${C.white(alias)}`);
-  console.log(`    Project: ${C.white(entry.project_name)}`);
+  console.log(`    Project: ${C.white(entry.project_name || '-')}`);
   console.log(`    Host:    ${C.dim(`${entry.host}:${entry.port}`)}`);
   console.log();
 

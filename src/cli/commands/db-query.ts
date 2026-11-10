@@ -199,7 +199,7 @@ async function authoriseLocalSql(
       message_type: req.action,
       request_id: `local-${Date.now().toString(36)}`,
       db_alias: req.entry.db_alias,
-      project: req.entry.project_name,
+      project: req.entry.project_name ?? req.entry.db_alias,
       user: { id: LOCAL_OPERATOR_ID, role: LOCAL_OPERATOR_ROLE },
     },
     undefined,
@@ -268,7 +268,7 @@ async function appendLocalAudit(
   },
 ): Promise<void> {
   const event = {
-    project: req.entry.project_name,
+    project: req.entry.project_name ?? req.entry.db_alias,
     user_id: LOCAL_OPERATOR_ID,
     // No cloud asserted this request: recording it as `user` would write the
     // local shell into the audit trail as a cloud principal holding `admin`.
@@ -489,7 +489,7 @@ export async function executeLocalSql(
     );
 
     await deps.audit.logSync({
-      project: req.entry.project_name,
+      project: req.entry.project_name ?? req.entry.db_alias,
       user_id: LOCAL_OPERATOR_ID,
       actor: 'local',
       role: LOCAL_OPERATOR_ROLE,
@@ -506,7 +506,7 @@ export async function executeLocalSql(
     return result;
   } catch (err) {
     await deps.audit.logSync({
-      project: req.entry.project_name,
+      project: req.entry.project_name ?? req.entry.db_alias,
       user_id: LOCAL_OPERATOR_ID,
       actor: 'local',
       role: LOCAL_OPERATOR_ROLE,

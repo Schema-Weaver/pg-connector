@@ -354,7 +354,7 @@ export class Dispatcher {
   private auditBase(msg: AgentMessage, permissionLevel: PermissionLevel) {
     return {
       id: msg.id,
-      project: msg.project,
+      project: msg.project ?? '',
       db_alias_asserted: msg.db_alias,
       user_id: msg.user.id,
       role: msg.user.role,
@@ -586,7 +586,7 @@ export class Dispatcher {
         // at `full` legitimately needs no plan.
         if (planId) {
           const scopeVerdict = this.opts.planRegistry.assertExecutionScope(planId, {
-            project: dbEntry?.project_name ?? msg.project,
+            project: dbEntry?.project_name ?? msg.project ?? '',
             db_alias: dbEntry?.db_alias ?? '',
           });
           if (!scopeVerdict.ok) {
@@ -635,7 +635,7 @@ export class Dispatcher {
             message_type: msg.type,
             request_id: msg.id,
             db_alias: msg.db_alias,
-            project: msg.project,
+            project: msg.project ?? '',
             // The RESOLVED pair, so a plan bound to production cannot be run by
             // a frame that names dev and the audit trail names the
             // database the statement actually reached.
@@ -797,7 +797,7 @@ export class Dispatcher {
                 v: 1,
                 id: crypto.randomUUID(),
                 type: 'stream_chunk',
-                project: msg.project,
+                project: msg.project ?? '',
                 user: msg.user,
                 db_alias: resolvedAlias ?? msg.db_alias,
                 ts: Date.now(),
@@ -811,7 +811,7 @@ export class Dispatcher {
                 v: 1,
                 id: crypto.randomUUID(),
                 type: 'stream_end',
-                project: msg.project,
+                project: msg.project ?? '',
                 user: msg.user,
                 db_alias: resolvedAlias ?? msg.db_alias,
                 ts: Date.now(),
@@ -876,7 +876,7 @@ export class Dispatcher {
           const result = await this.opts.migrationRunner.run(msg.payload as MigrationRunPayload, {
             dbEntry: dbEntry!,
             request_id: msg.id,
-            project: msg.project,
+            project: msg.project ?? '',
             user: msg.user,
             db_alias: resolvedAlias ?? msg.db_alias,
             registerInFlight: (req) => {

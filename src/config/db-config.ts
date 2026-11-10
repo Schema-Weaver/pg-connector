@@ -20,7 +20,7 @@ import {
  * One project = one DB (schema weaver constraint).
  */
 export interface DbEntry {
-  project_name: string; // unique across array
+  project_name?: string; // optional metadata label
   db_alias: string; // unique across array
   host: string;
   port: number; // 1-65535
@@ -453,7 +453,6 @@ export function validateDbConfig(raw: unknown): DbConfig {
     throw new ConfigInvalidError('DB config must be a JSON array of database entries');
   }
 
-  const projects = new Set<string>();
   const aliases = new Set<string>();
 
   for (let i = 0; i < raw.length; i++) {
@@ -465,18 +464,13 @@ export function validateDbConfig(raw: unknown): DbConfig {
     const data = entry as Record<string, unknown>;
 
     const project = data.project_name;
-    if (typeof project !== 'string' || !isValidIdentifier(project, 64) || project.includes(' ')) {
-      throw new ConfigInvalidError(
-        `Entry at index ${i} invalid: Project name can only contain letters, numbers, hyphens, and underscores.`,
-      );
+    if (project !== undefined && project !== null && project !== '') {
+      if (typeof project !== 'string' || !isValidIdentifier(project, 64) || project.includes(' ')) {
+        throw new ConfigInvalidError(
+          `Entry at index ${i} invalid: Project name can only contain letters, numbers, hyphens, and underscores.`,
+        );
+      }
     }
-    if (projects.has(project)) {
-      const aliasName = data.db_alias || 'unknown';
-      throw new ConfigInvalidError(
-        `Project "${project}" already has a database (${aliasName}). Schema Weaver enforces one database per project. Remove the existing entry first or use a different project name.`,
-      );
-    }
-    projects.add(project);
 
     const alias = data.db_alias;
     if (typeof alias !== 'string' || !isValidIdentifier(alias, 64) || alias.includes(' ')) {
@@ -647,18 +641,10 @@ export function mutateDbConfig<T>(mutate: (config: DbConfig) => T): T {
 }
 
 /**
- * Adds a database entry to config and saves it. Enforces one DB per project.
+ * Adds a database entry to config and saves it. Enforces unique database alias.
  */
 export function addDbEntry(entry: Omit<DbEntry, 'created_at'>): DbEntry {
   return mutateDbConfig((config) => {
-    // One-DB-Per-Project rule
-    const existingProj = config.find((e) => e.project_name === entry.project_name);
-    if (existingProj) {
-      throw new ConfigInvalidError(
-        `Project "${entry.project_name}" already has a database (${existingProj.db_alias}). Schema Weaver enforces one database per project. Remove the existing entry first or use a different project name.`,
-      );
-    }
-
     // Alias uniqueness rule
     if (config.some((e) => e.db_alias === entry.db_alias)) {
       throw new ConfigInvalidError(`Database alias "${entry.db_alias}" already exists in config`);
@@ -709,7 +695,9 @@ export function findDbByProject(projectName: string): DbEntry | null {
  */
 export function listProjects(): string[] {
   const config = loadDbConfig();
-  const projects = config.map((e) => e.project_name);
+  const projects = config
+    .map((e) => e.project_name)
+    .filter((p): p is string => typeof p === 'string' && p.length > 0);
   return Array.from(new Set(projects)).sort();
 }
 

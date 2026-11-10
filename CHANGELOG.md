@@ -5,6 +5,14 @@ All notable changes to `@schema-weaver/pg-connector` are documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.3] - 2026-11-10
+
+### Changed
+
+- **Database-Centric Routing & Resolution**: Decoupled database lookup and routing from the legacy `project` parameter. Requests now resolve primarily by `db_alias`.
+- **Multi-Database Support**: Removed the artificial "one database per project" constraint in `db add` and config validation. Users can now register multiple databases cleanly under distinct aliases on a single connector agent.
+- **Resilient Default Fallback**: Inbound relay frames carrying `default` database alias or missing project parameters now seamlessly fall back to the registered database, preventing false `database_not_found` denials in the Data Explorer and IDE.
+
 ## [2.0.2] - 2026-11-05
 
 ### Fixed

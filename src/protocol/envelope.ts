@@ -90,8 +90,8 @@ export interface AgentMessage<T = unknown> {
   /** Message type. Determines payload shape. */
   type: MessageType;
 
-  /** Project name. Must match a project_name in databases.config.json. */
-  project: string;
+  /** Project name. Optional metadata. */
+  project?: string;
 
   /**
    * Acting user, as asserted by the relay.
@@ -361,7 +361,7 @@ export function createMessage<T>(
   type: MessageType,
   opts: {
     id?: string;
-    project: string;
+    project?: string;
     user: { id: string; role: Role };
     db_alias: string;
     payload: T;

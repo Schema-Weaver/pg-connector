@@ -47,7 +47,7 @@ export type DatabaseLookupResult = DatabaseLookupHit | DatabaseLookupRefusal;
  * `db_unavailable`.
  */
 export type LookupDbFn = (
-  project: string,
+  project?: string,
   alias?: string,
 ) => DbEntry | DatabaseLookupResult | null;
 
@@ -78,15 +78,15 @@ export function isLookupRefusal(
  */
 export function normaliseLookupResult(
   result: DbEntry | DatabaseLookupResult | null,
-  assertedProject: string,
+  assertedProject: string | undefined,
   assertedAlias: string | undefined,
 ): DatabaseLookupResult {
   if (result === null || result === undefined) {
     return {
       ok: false,
       code: 'database_not_found',
-      reason: `No configured database matches project "${assertedProject}"`,
-      asserted_project: assertedProject,
+      reason: `No configured database matches "${assertedAlias || assertedProject || 'default'}"`,
+      asserted_project: assertedProject ?? '',
       asserted_db_alias: assertedAlias ?? '',
     };
   }

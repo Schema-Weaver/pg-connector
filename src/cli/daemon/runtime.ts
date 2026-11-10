@@ -844,7 +844,7 @@ export function scopeAllowsEntry(rules: DatabaseScopeRule[] | null, entry: DbEnt
 }
 
 export interface DeniedDatabaseRequest {
-  project: string;
+  project?: string;
   db_alias?: string;
   reason: string;
   /**
@@ -889,7 +889,7 @@ export interface LookupDbOptions {
  */
 export function createLookupDb(
   opts: LookupDbOptions,
-): (project: string, alias?: string) => DatabaseLookupResult {
+): (project?: string, alias?: string) => DatabaseLookupResult {
   const deny = (
     attempt: DeniedDatabaseRequest,
     code: DatabaseRefusalCode,
@@ -899,12 +899,12 @@ export function createLookupDb(
       ok: false,
       code,
       reason: attempt.reason,
-      asserted_project: attempt.project,
+      asserted_project: attempt.project ?? '',
       asserted_db_alias: attempt.db_alias ?? '',
     };
   };
 
-  return (project: string, alias?: string): DatabaseLookupResult => {
+  return (project?: string, alias?: string): DatabaseLookupResult => {
     const failClosed = opts.decision?.fail_closed === true;
 
     // Nothing is reachable without an allow-list unless the operator has
@@ -923,55 +923,47 @@ export function createLookupDb(
     }
 
     const databases = opts.getDatabases();
-    const byProject = databases.find((entry) => entry.project_name === project);
-    const byAlias = alias ? databases.find((entry) => entry.db_alias === alias) : undefined;
 
-    // two names for one entry is fine; two names for two entries is not.
-    if (byProject && byAlias && byProject.db_alias !== byAlias.db_alias) {
-      return deny(
-        {
-          project,
-          db_alias: alias,
-          reason:
-            'the project and the db_alias in this request name different configured databases',
-        },
-        'db_alias_project_mismatch',
-      );
+    // 1. Resolve by explicit non-default alias first
+    let matchedEntry: DbEntry | undefined;
+    if (alias && alias !== 'default') {
+      matchedEntry = databases.find((entry) => entry.db_alias === alias);
     }
 
-    if (byProject) {
-      if (!scopeAllowsEntry(opts.scope, byProject)) {
+    // 2. If not found by alias, check if project matches an alias or project_name
+    if (!matchedEntry && project && project !== 'default') {
+      matchedEntry =
+        databases.find((entry) => entry.db_alias === project) ||
+        databases.find((entry) => entry.project_name === project);
+    }
+
+    // 3. Fallback ONLY when alias is 'default' or omitted:
+    const isExplicitAlias = Boolean(alias && alias !== 'default');
+    if (!matchedEntry && !isExplicitAlias) {
+      matchedEntry =
+        databases.find((entry) => entry.db_alias === 'default') ||
+        (databases.length > 0 ? databases[0] : undefined);
+    }
+
+    if (matchedEntry) {
+      if (!scopeAllowsEntry(opts.scope, matchedEntry)) {
         return deny(
           {
             project,
-            db_alias: byProject.db_alias,
-            reason: "the project is not in this agent's permitted database allow-list",
+            db_alias: matchedEntry.db_alias,
+            reason: "the database is not in this agent's permitted database allow-list",
           },
           'database_out_of_scope',
         );
       }
-      return { ok: true, entry: byProject };
+      return { ok: true, entry: matchedEntry };
     }
-    // Protocol also addresses DBs by db_alias. Fall back so relay clients that
-    // only know the alias (e.g. the Data Explorer relay) still resolve.
-    if (byAlias) {
-      if (!scopeAllowsEntry(opts.scope, byAlias)) {
-        return deny(
-          {
-            project,
-            db_alias: alias,
-            reason: "the database alias is not in this agent's permitted database allow-list",
-          },
-          'database_out_of_scope',
-        );
-      }
-      return { ok: true, entry: byAlias };
-    }
+
     return {
       ok: false,
       code: 'database_not_found',
-      reason: `No configured database matches project "${project}"`,
-      asserted_project: project,
+      reason: `No configured database matches alias "${alias || project || 'default'}"`,
+      asserted_project: project ?? '',
       asserted_db_alias: alias ?? '',
     };
   };

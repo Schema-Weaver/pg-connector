@@ -114,7 +114,7 @@ export async function runDbShow(args: string[]): Promise<void> {
 
   const rows = [
     ['Alias', C.cyan(entry.db_alias)],
-    ['Project', C.white(entry.project_name)],
+    ['Project', C.white(entry.project_name || '-')],
     ['Host', C.white(`${entry.host}:${entry.port}`)],
     ['Database', C.white(entry.database)],
     ['User', C.white(entry.user)],
