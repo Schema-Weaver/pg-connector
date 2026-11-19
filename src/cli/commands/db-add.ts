@@ -27,6 +27,17 @@ import { Pool, PoolConfig } from 'pg';
 import * as fs from 'fs';
 import { C, S, check, separator, createSpinner } from '../ui';
 import { buildSslConfig } from '../../execution/pool';
+import {
+  DB_TYPES,
+  defaultPortFor,
+  isDbType,
+  MONGODB_READ_CONCERNS,
+  MONGODB_READ_PREFERENCES,
+  type DbType,
+  type MongoReadConcern,
+  type MongoReadPreference,
+} from '../../drivers/config-shape';
+import { createDriverForEntry } from '../../drivers/factory';
 
 function exit_(code: number): never {
   closePrompts();
@@ -103,6 +114,84 @@ function describePasswordSource(
   return C.yellow('stored (AES-256-GCM at rest)');
 }
 
+/**
+ * Prove the entry can connect before it is written.
+ *
+ * PostgreSQL keeps its existing pool probe. MySQL and MongoDB go through their
+ * driver, which applies the same TLS and credential rules the daemon will use —
+ * a test that connects differently from the real path proves nothing.
+ */
+async function testConnectionForAdd(
+  entry: Omit<DbEntry, 'created_at'>,
+  connectPassword: string,
+  redact: (text: string) => string,
+): Promise<{ ok: boolean; version: string; error: string }> {
+  const dbType = entry.db_type ?? 'postgres';
+
+  if (dbType !== 'postgres') {
+    const full = { ...entry, created_at: new Date().toISOString() } as DbEntry;
+    const driver = createDriverForEntry(full);
+    if (!driver) {
+      return { ok: false, version: '', error: `No driver is available for '${dbType}'.` };
+    }
+    try {
+      const info = await driver.testConnection(full);
+      return { ok: true, version: info.version, error: '' };
+    } catch (err: unknown) {
+      return {
+        ok: false,
+        version: '',
+        error: redact(err instanceof Error ? err.message : String(err)),
+      };
+    } finally {
+      await driver.closeAll().catch(() => undefined);
+    }
+  }
+
+  const poolConfig: PoolConfig = {
+    host: entry.host,
+    port: entry.port,
+    database: entry.database,
+    user: entry.user,
+    password: connectPassword,
+    connectionTimeoutMillis: 5000,
+  };
+
+  const ssl = buildSslConfig(entry.ssl_mode, entry.ssl_root_cert);
+  if (ssl) {
+    poolConfig.ssl = ssl;
+  }
+
+  const pool = new Pool(poolConfig);
+  try {
+    const res = await pool.query('SELECT version()');
+    const raw = res.rows[0]?.version || '';
+    const match = raw.match(/PostgreSQL [^\s,]+/);
+    return { ok: true, version: match ? match[0] : 'PostgreSQL', error: '' };
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      version: '',
+      error: redact(err instanceof Error ? err.message : String(err)),
+    };
+  } finally {
+    await pool.end().catch(() => undefined);
+  }
+}
+
+/** Default username per engine, used only when no `--user` was supplied. */
+function defaultUserFor(type: DbType): string {
+  switch (type) {
+    case 'mysql':
+      return 'root';
+    case 'mongodb':
+      return 'admin';
+    case 'postgres':
+    default:
+      return 'postgres';
+  }
+}
+
 export async function runDbAdd(args: string[] = []): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log();
@@ -130,7 +219,15 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
     console.log(
       `    ${C.cyan('       [--password-file <path> | --password-stdin | --env <var>] [--ssl <mode>] [--cert <path>]')}`,
     );
-    console.log(`    ${C.cyan('       [--permission <level>] [--no-test]')}`);
+    console.log(`    ${C.cyan('       [--permission <level>] [--type postgres|mysql|mongodb] [--no-test]')}`);
+    console.log();
+    console.log(`  ${C.bold('MongoDB-only flags:')}`);
+    console.log(
+      `    ${C.cyan('       [--srv] [--auth-source <db>] [--read-preference <mode>] [--read-concern <level>]')}`,
+    );
+    console.log(
+      `    ${C.dim('--srv uses mongodb+srv://; the port is ignored and the DNS records carry the hosts.')}`,
+    );
     console.log();
     console.log(`  ${C.bold('Password sources, safest first:')}`);
     console.log(
@@ -172,6 +269,11 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
   const flagSsl = findFlag(args, '--ssl', '--ssl-mode');
   const flagCert = findFlag(args, '--cert');
   const flagPerm = findFlag(args, '--permission', '--perm');
+  const flagType = findFlag(args, '--type', '--engine');
+  const flagAuthSource = findFlag(args, '--auth-source');
+  const flagReadPref = findFlag(args, '--read-preference');
+  const flagReadConcern = findFlag(args, '--read-concern');
+  const flagSrv = args.includes('--srv');
   const skipTest = args.includes('--no-test') || args.includes('--skip-test');
 
   const hasUrlArg = args.some((a) => a === '--url' || a === '--url-file' || a === '--url-stdin');
@@ -180,6 +282,15 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
   );
 
   if (hasNonInteractiveArgs) {
+    let dbType: DbType = 'postgres';
+    if (flagType) {
+      if (!isDbType(flagType)) {
+        console.log(`  ${C.red(S.cross)} --type must be one of ${DB_TYPES.join(', ')}.`);
+        exit_(1);
+      }
+      dbType = flagType;
+    }
+
     let passwordStored: string | undefined;
     let passwordSource: SecretSource | undefined;
     const passwordEnv = flagEnv;
@@ -247,19 +358,35 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
     }
 
     let host = flagHost || 'localhost';
-    let port = flagPort ? parseInt(flagPort, 10) : 5432;
+    let port = flagPort ? parseInt(flagPort, 10) : defaultPortFor(dbType);
     let database = flagDatabase || '';
-    let user = flagUser || 'postgres';
+    let user = flagUser || defaultUserFor(dbType);
     let sslMode: DbEntry['ssl_mode'] = (flagSsl as DbEntry['ssl_mode']) || 'require';
     const sslCert: string | null = flagCert || null;
+    let srv = flagSrv;
+    // URI query parameters are the other conventional way to carry these
+    // MongoDB settings. They are parsed into the same fields as the flags, so
+    // the stored entry always describes the connection that was tested.
+    let authSource = flagAuthSource;
+    let readPreference = flagReadPref;
+    let readConcern = flagReadConcern;
 
     if (urlArg) {
       try {
         const u = new URL(urlArg);
-        if (u.protocol !== 'postgres:' && u.protocol !== 'postgresql:') {
-          console.log(`  ${C.red(S.cross)} URL must begin with postgres:// or postgresql://`);
+        const expectedProtocols =
+          dbType === 'postgres'
+            ? ['postgres:', 'postgresql:']
+            : dbType === 'mysql'
+              ? ['mysql:']
+              : ['mongodb:', 'mongodb+srv:'];
+        if (!expectedProtocols.includes(u.protocol)) {
+          console.log(
+            `  ${C.red(S.cross)} URL must begin with ${expectedProtocols.join(' or ')} for db_type '${dbType}'.`,
+          );
           exit_(1);
         }
+        if (u.protocol === 'mongodb+srv:') srv = true;
         host = u.hostname || host;
         port = u.port ? parseInt(u.port, 10) : port;
         database = u.pathname ? u.pathname.replace(/^\//, '') : database;
@@ -275,6 +402,14 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
         if (sslParam && ['disable', 'require', 'verify-ca', 'verify-full'].includes(sslParam)) {
           sslMode = sslParam as DbEntry['ssl_mode'];
         }
+        if (u.searchParams.get('tls') === 'false' || u.searchParams.get('ssl') === 'false') {
+          sslMode = 'disable';
+        }
+        if (dbType === 'mongodb') {
+          authSource = u.searchParams.get('authSource') ?? authSource;
+          readPreference = u.searchParams.get('readPreference') ?? readPreference;
+          readConcern = u.searchParams.get('readConcernLevel') ?? readConcern;
+        }
       } catch (err: unknown) {
         // The URL is echoed redacted: an invalid URL can still be
         // userinfo-bearing, and Node puts the offending input on the error.
@@ -285,6 +420,32 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
         );
         exit_(1);
       }
+    }
+
+    if (srv && dbType !== 'mongodb') {
+      console.log(`  ${C.red(S.cross)} --srv is only valid for MongoDB.`);
+      exit_(1);
+    }
+    if (dbType !== 'mongodb' && (flagAuthSource || flagReadPref || flagReadConcern)) {
+      console.log(
+        `  ${C.red(S.cross)} --auth-source, --read-preference and --read-concern are MongoDB-only.`,
+      );
+      exit_(1);
+    }
+    if (
+      readPreference &&
+      !MONGODB_READ_PREFERENCES.includes(readPreference as MongoReadPreference)
+    ) {
+      console.log(
+        `  ${C.red(S.cross)} read preference must be one of ${MONGODB_READ_PREFERENCES.join(', ')}.`,
+      );
+      exit_(1);
+    }
+    if (readConcern && !MONGODB_READ_CONCERNS.includes(readConcern as MongoReadConcern)) {
+      console.log(
+        `  ${C.red(S.cross)} read concern must be one of ${MONGODB_READ_CONCERNS.join(', ')}.`,
+      );
+      exit_(1);
     }
 
     const dbAlias = flagAlias || database || 'db';
@@ -314,13 +475,20 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
       exit_(1);
     }
 
-    if (!database || database.length > 63) {
-      console.log(`  ${C.red(S.cross)} Database name is required and must be <= 63 characters.`);
+    const maxDatabaseLength = dbType === 'mysql' ? 64 : 63;
+    const maxUserLength = dbType === 'postgres' ? 63 : 128;
+
+    if (!database || database.length > maxDatabaseLength) {
+      console.log(
+        `  ${C.red(S.cross)} Database name is required and must be <= ${maxDatabaseLength} characters.`,
+      );
       exit_(1);
     }
 
-    if (!user || user.length > 63) {
-      console.log(`  ${C.red(S.cross)} Database user is required and must be <= 63 characters.`);
+    if (!user || user.length > maxUserLength) {
+      console.log(
+        `  ${C.red(S.cross)} Database user is required and must be <= ${maxUserLength} characters.`,
+      );
       exit_(1);
     }
 
@@ -355,10 +523,19 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
     const entry: Omit<DbEntry, 'created_at'> = {
       project_name: projectName,
       db_alias: dbAlias,
+      db_type: dbType,
       host,
       port,
       database,
       user,
+      ...(dbType === 'mongodb'
+        ? {
+            srv,
+            auth_source: authSource ?? null,
+            read_preference: (readPreference as MongoReadPreference | undefined) ?? null,
+            read_concern: (readConcern as MongoReadConcern | undefined) ?? null,
+          }
+        : {}),
       password_env: passwordEnv,
       password_stored: passwordStored,
       ssl_mode: sslMode,
@@ -371,43 +548,19 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
       spinner.start(`Testing connection to ${C.cyan(dbAlias)} (${host}:${port}/${database})…`);
 
       const connectPassword = passwordEnv ? process.env[passwordEnv] || '' : passwordStored || '';
-      // Everything below may render a `pg` error to the terminal, so the live
-      // value — stored or environment-resolved — is on the redaction list. A
-      // `pg` auth failure quotes the connection parameters, and nothing here
-      // should be the place the password is discovered.
+      // Everything below may render a driver error to the terminal, so the live
+      // value — stored or environment-resolved — is on the redaction list. An
+      // auth failure quotes the connection parameters, and nothing here should
+      // be the place the password is discovered.
       const redact = (text: string) => redactSecrets(text, passwordStored, connectPassword);
 
-      const poolConfig: PoolConfig = {
-        host,
-        port,
-        database,
-        user,
-        password: connectPassword,
-        connectionTimeoutMillis: 5000,
-      };
-
-      const ssl = buildSslConfig(sslMode, sslCert);
-      if (ssl) {
-        poolConfig.ssl = ssl;
-      }
-
-      const pool = new Pool(poolConfig);
-      try {
-        const res = await pool.query('SELECT version()');
-        const raw = res.rows[0]?.version || '';
-        const match = raw.match(/PostgreSQL [^\s,]+/);
-        const ver = match ? match[0] : 'PostgreSQL';
-        spinner.succeed(`Connected. ${C.green(ver)}`);
-      } catch (err: unknown) {
-        spinner.fail(
-          `Connection test failed: ${C.red(redact(err instanceof Error ? err.message : String(err)))}`,
-        );
+      const tested = await testConnectionForAdd(entry, connectPassword, redact);
+      if (!tested.ok) {
+        spinner.fail(`Connection test failed: ${C.red(tested.error)}`);
         console.log(`  ${C.yellow('Note:')} Use ${C.cyan('--no-test')} to save anyway.`);
-        await pool.end();
         exit_(1);
-      } finally {
-        await pool.end();
       }
+      spinner.succeed(`Connected. ${C.green(tested.version)}`);
     }
 
     try {
@@ -425,6 +578,7 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
     console.log(`  ${C.bold('Configuration:')}`);
     console.log(`    Alias:      ${C.white(dbAlias)}`);
     console.log(`    Project:    ${C.white(projectName)}`);
+    console.log(`    Engine:     ${C.magenta(dbType)}`);
     console.log(`    Host:       ${C.white(`${host}:${port}`)}`);
     console.log(`    Database:   ${C.white(database)}`);
     console.log(`    User:       ${C.white(user)}`);
@@ -496,6 +650,16 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
   console.log(`  ${check(`Alias: ${C.white(dbAlias)}`)}`);
   console.log();
 
+  const engineChoice = await askChoice(
+    'Database engine',
+    ['PostgreSQL', 'MySQL', 'MongoDB'],
+    'PostgreSQL',
+  );
+  const dbType: DbType =
+    engineChoice === 'MySQL' ? 'mysql' : engineChoice === 'MongoDB' ? 'mongodb' : 'postgres';
+  console.log(`  ${check(`Engine: ${C.magenta(dbType)}`)}`);
+  console.log();
+
   let host = '';
   for (;;) {
     host = await ask('Host', 'localhost');
@@ -508,9 +672,9 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
   console.log(`  ${check(`Host: ${C.white(host)}`)}`);
   console.log();
 
-  let portVal = 5432;
+  let portVal = defaultPortFor(dbType);
   for (;;) {
-    const portStr = await ask('Port', '5432');
+    const portStr = await ask('Port', String(defaultPortFor(dbType)));
     const port = parseInt(portStr, 10);
     if (!isNaN(port) && port >= 1 && port <= 65535) {
       portVal = port;
@@ -521,26 +685,29 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
   console.log(`  ${check(`Port: ${C.white(String(portVal))}`)}`);
   console.log();
 
+  const maxDatabaseLength = dbType === 'mysql' ? 64 : 63;
+  const maxUserLength = dbType === 'postgres' ? 63 : 128;
+
   let database = '';
   for (;;) {
     database = await ask('Database name');
     if (database.trim() === '') continue;
-    if (database.length <= 63) {
+    if (database.length <= maxDatabaseLength) {
       break;
     }
-    console.log(`  ${C.red(S.cross)} Database name too long (max 63).`);
+    console.log(`  ${C.red(S.cross)} Database name too long (max ${maxDatabaseLength}).`);
   }
   console.log(`  ${check(`Database: ${C.white(database)}`)}`);
   console.log();
 
   let user = '';
   for (;;) {
-    user = await ask('Username');
+    user = await ask('Username', defaultUserFor(dbType));
     if (user.trim() === '') continue;
-    if (user.length <= 63) {
+    if (user.length <= maxUserLength) {
       break;
     }
-    console.log(`  ${C.red(S.cross)} Username too long (max 63).`);
+    console.log(`  ${C.red(S.cross)} Username too long (max ${maxUserLength}).`);
   }
   console.log(`  ${check(`User: ${C.white(user)}`)}`);
   console.log();
@@ -589,6 +756,25 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
     }
   }
 
+  let srv = false;
+  let authSource: string | null = null;
+  let readPreference: MongoReadPreference | null = null;
+  let readConcern: MongoReadConcern | null = null;
+  if (dbType === 'mongodb') {
+    srv = await askConfirm('Use a DNS seed list (mongodb+srv://)?', false);
+    authSource = (await ask('Auth source database', database)) || database;
+    readPreference = (await askChoice(
+      'Read preference',
+      [...MONGODB_READ_PREFERENCES],
+      'primary',
+    )) as MongoReadPreference;
+    readConcern = (await askChoice(
+      'Read concern',
+      [...MONGODB_READ_CONCERNS],
+      'local',
+    )) as MongoReadConcern;
+  }
+
   const permOverride = await askChoice(
     'Permission',
     ['read_only', 'auto_upgrade', 'manual', 'full', 'use default'],
@@ -599,10 +785,19 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
   const entry: Omit<DbEntry, 'created_at'> = {
     project_name: projectName,
     db_alias: dbAlias,
+    db_type: dbType,
     host,
     port: portVal,
     database,
     user,
+    ...(dbType === 'mongodb'
+      ? {
+          srv,
+          auth_source: authSource,
+          read_preference: readPreference,
+          read_concern: readConcern,
+        }
+      : {}),
     password_env: passwordEnv,
     password_stored: passwordStored,
     ssl_mode: sslMode,
@@ -614,47 +809,15 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
   const spinner = createSpinner();
   spinner.start(`Testing connection to ${C.white(dbAlias)}...`);
 
-  const poolConfig: PoolConfig = {
-    host: entry.host,
-    port: entry.port,
-    database: entry.database,
-    user: entry.user,
-    password: passwordEnv ? process.env[passwordEnv] || '' : passwordStored || '',
-    connectionTimeoutMillis: 5000,
-  };
+  const connectPassword = passwordEnv ? process.env[passwordEnv] || '' : passwordStored || '';
+  const tested = await testConnectionForAdd(
+    entry,
+    connectPassword,
+    (text) => redactSecrets(text, passwordStored, connectPassword),
+  );
 
-  const ssl = buildSslConfig(entry.ssl_mode, entry.ssl_root_cert);
-  if (ssl) {
-    poolConfig.ssl = ssl;
-  }
-
-  const pool = new Pool(poolConfig);
-  let connectionOk = false;
-  let connectionError = '';
-  let versionStr = '';
-
-  try {
-    const result = await Promise.race([
-      pool.query('SELECT version();'),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Connection timed out (5s)')), 5000),
-      ),
-    ]);
-    versionStr = result.rows[0]?.version || 'unknown version';
-    const match = versionStr.match(/PostgreSQL [^\s,]+/);
-    versionStr = match ? match[0] : 'PostgreSQL';
-    connectionOk = true;
-  } catch (connErr) {
-    connectionError = redactSecrets(
-      connErr instanceof Error ? connErr.message : String(connErr),
-      passwordStored,
-    );
-  } finally {
-    await pool.end();
-  }
-
-  if (!connectionOk) {
-    spinner.fail(`Connection failed: ${C.red(connectionError)}`);
+  if (!tested.ok) {
+    spinner.fail(`Connection failed: ${C.red(tested.error)}`);
     console.log();
     const saveAnyway = await askConfirm(C.yellow('Connection failed. Save entry anyway?'), false);
     if (!saveAnyway) {
@@ -662,7 +825,7 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
       exit_(0);
     }
   } else {
-    spinner.succeed(`Connected. ${C.green(versionStr)}`);
+    spinner.succeed(`Connected. ${C.green(tested.version)}`);
   }
 
   try {
@@ -680,6 +843,7 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
   console.log(`  ${C.bold('Summary:')}`);
   console.log(`    Project:    ${C.white(projectName)}`);
   console.log(`    Alias:      ${C.white(dbAlias)}`);
+  console.log(`    Engine:     ${C.magenta(dbType)}`);
   console.log(`    Host:       ${C.white(host)}:${C.white(String(portVal))}`);
   console.log(`    Database:   ${C.white(database)}`);
   console.log(`    User:       ${C.white(user)}`);

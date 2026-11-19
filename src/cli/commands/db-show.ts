@@ -3,6 +3,8 @@ import { redactSecrets } from '../../config/schema';
 import { createDbPool } from './db-query';
 import { isReplMode } from '../prompt';
 import { C, S, check, warn, terminalWidth, truncateAnsi } from '../ui';
+import { dbTypeOf } from '../../drivers/config-shape';
+import { createDriverForEntry } from '../../drivers/factory';
 
 function exit_(code: number): never {
   if (isReplMode()) {
@@ -48,18 +50,33 @@ export async function runDbShow(args: string[]): Promise<void> {
   let pgVersion = '';
   let connError = '';
 
+  const dbType = dbTypeOf(entry);
+
   try {
-    const pool = createDbPool(entry);
     const start = Date.now();
-    try {
-      const res = await pool.query('SELECT version()');
-      latencyMs = Date.now() - start;
-      connected = true;
-      const raw = res.rows[0]?.version || '';
-      const match = raw.match(/PostgreSQL [^\s,]+/);
-      pgVersion = match ? match[0] : 'PostgreSQL';
-    } finally {
-      await pool.end();
+    if (dbType === 'postgres') {
+      const pool = createDbPool(entry);
+      try {
+        const res = await pool.query('SELECT version()');
+        latencyMs = Date.now() - start;
+        connected = true;
+        const raw = res.rows[0]?.version || '';
+        const match = raw.match(/PostgreSQL [^\s,]+/);
+        pgVersion = match ? match[0] : 'PostgreSQL';
+      } finally {
+        await pool.end();
+      }
+    } else {
+      const driver = createDriverForEntry(entry);
+      if (!driver) throw new Error(`No driver is available for '${dbType}'.`);
+      try {
+        const info = await driver.testConnection(entry);
+        latencyMs = Date.now() - start;
+        connected = true;
+        pgVersion = info.version;
+      } finally {
+        await driver.closeAll().catch(() => undefined);
+      }
     }
   } catch (err: unknown) {
     connected = false;
@@ -69,7 +86,10 @@ export async function runDbShow(args: string[]): Promise<void> {
       err instanceof Error
         ? err.message
         : (err as { message?: string } | null | undefined)?.message;
-    connError = redactSecrets(message || String(err), entry.password_stored);
+    const secret =
+      entry.password_stored ||
+      (entry.password_env ? process.env[entry.password_env] : undefined);
+    connError = redactSecrets(message || String(err), secret);
   }
 
   if (isJson) {
@@ -77,11 +97,20 @@ export async function runDbShow(args: string[]): Promise<void> {
       JSON.stringify(
         {
           alias: entry.db_alias,
+          db_type: dbType,
           project_name: entry.project_name,
           host: entry.host,
           port: entry.port,
           database: entry.database,
           user: entry.user,
+          ...(dbType === 'mongodb'
+            ? {
+                srv: entry.srv === true,
+                auth_source: entry.auth_source ?? null,
+                read_preference: entry.read_preference ?? 'primary',
+                read_concern: entry.read_concern ?? 'local',
+              }
+            : {}),
           password_type: entry.password_env ? 'env' : 'stored',
           password_at_rest: entry.password_env ? 'environment_variable' : 'aes_256_gcm_envelope',
           password_env: entry.password_env || null,
@@ -114,10 +143,19 @@ export async function runDbShow(args: string[]): Promise<void> {
 
   const rows = [
     ['Alias', C.cyan(entry.db_alias)],
+    ['Engine', C.magenta(dbType)],
     ['Project', C.white(entry.project_name || '-')],
     ['Host', C.white(`${entry.host}:${entry.port}`)],
     ['Database', C.white(entry.database)],
     ['User', C.white(entry.user)],
+    ...(dbType === 'mongodb'
+      ? ([
+          ['SRV', entry.srv ? C.green('enabled') : C.dim('disabled')],
+          ['Auth Source', C.white(entry.auth_source || entry.database)],
+          ['Read Pref.', C.white(entry.read_preference || 'primary')],
+          ['Read Concern', C.white(entry.read_concern || 'local')],
+        ] as Array<[string, string]>)
+      : []),
     [
       'Password',
       entry.password_env

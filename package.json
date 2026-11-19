@@ -99,6 +99,9 @@
   "dependencies": {
     "@inquirer/core": "^11.2.1",
     "@inquirer/prompts": "^8.5.2",
+    "mongodb": "6.21.0",
+    "mysql2": "3.24.6",
+    "node-sql-parser": "5.4.0",
     "pg": "^8.21.0",
     "pgsql-parser": "^18.2.8",
     "ws": "^8.21.0"

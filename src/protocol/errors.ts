@@ -80,7 +80,9 @@ export type ErrorCode =
   // Generic
   | 'execution_failed'          // PG returned an error not covered above
   | 'internal_error'            // agent bug (should never happen)
-  | 'not_implemented';          // feature not yet built;
+  | 'not_implemented'           // feature not yet built;
+  // The resolved engine does not implement this operation at all.
+  | 'unsupported_database_operation';
 
 export interface ErrorMetadata {
   code: ErrorCode;
@@ -454,6 +456,15 @@ export const ERROR_CATALOG: Record<ErrorCode, ErrorMetadata> = {
     fatal: false,
     retryable: false,
     recovery_hint: 'This part of the protocol is reserved for a future agent version.',
+  },
+  unsupported_database_operation: {
+    code: 'unsupported_database_operation',
+    default_message: 'This database engine does not support the requested operation.',
+    fatal: false,
+    retryable: false,
+    recovery_hint:
+      'Use an operation the configured engine supports. Introspection, migrations and ' +
+      'cancellation are PostgreSQL-only in this agent version.',
   },
 };
 

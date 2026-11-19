@@ -41,6 +41,9 @@ import {
 } from './database-lookup';
 import { validateMigrationResultPayload } from '../protocol/validate';
 import { functionEffectResolverForPool } from './function-effects';
+import { dbTypeOf, type DbType } from '../drivers/config-shape';
+import { DriverRegistry } from '../drivers/registry';
+import { PostgresDriver } from '../drivers/postgres';
 import {
   POOL_ERROR_MESSAGES,
   sanitizeErrorText,
@@ -57,6 +60,15 @@ export interface DispatcherOptions {
   introspector: Introspector;
   permissionChecker: PermissionChecker;
   planRegistry: PlanRegistry;
+  /**
+   * Engine dispatch for query and stream execution.
+   *
+   * Optional so every existing caller keeps working: when it is absent the
+   * dispatcher builds a PostgreSQL-only registry over the supplied pool and
+   * runner, which is exactly the pre-driver behaviour. The daemon supplies a
+   * registry with MySQL and MongoDB registered.
+   */
+  drivers?: DriverRegistry;
   /**
    * Look up the DB entry for a frame's `(project, db_alias)`.
    *
@@ -94,10 +106,16 @@ export interface DispatcherOptions {
 export class Dispatcher {
   private readonly opts: DispatcherOptions;
   private readonly rateLimiter: RateLimiter;
+  private readonly drivers: DriverRegistry;
 
   constructor(opts: DispatcherOptions) {
     this.opts = opts;
     this.rateLimiter = opts.rateLimiter ?? new RateLimiter();
+    this.drivers =
+      opts.drivers ??
+      new DriverRegistry([
+        new PostgresDriver({ poolManager: opts.poolManager, queryRunner: opts.queryRunner }),
+      ]);
   }
 
   private async sendResponse(
@@ -147,6 +165,21 @@ export class Dispatcher {
       ts: Date.now(),
       payload: makeError(code, msg.id, { message, pg_error }),
     });
+  }
+
+  /**
+   * Audit fields for one statement, redacted for the engine that will execute
+   * it. The dialect matters: a MySQL `\'` and a JSON `\"` both close a
+   * PostgreSQL literal early, which would leave part of a value in the preview.
+   */
+  private statementAuditFields(
+    sql: string,
+    dialect: DbType,
+  ): { statement_fingerprint: string; statement_preview: string } {
+    return {
+      statement_fingerprint: fingerprintStatement(sql, dialect),
+      statement_preview: previewStatement(sql, dialect),
+    };
   }
 
   /**
@@ -488,6 +521,24 @@ export class Dispatcher {
         planId = payload.plan_id;
       } else if (msg.type === 'migration_run') {
         const payload = msg.payload as MigrationRunPayload;
+        // Migrations are PostgreSQL-only: the runner opens a transaction with
+        // PG-specific session settings and per-statement behaviour. Refusing
+        // here keeps a migration frame from reaching the PostgreSQL runner with
+        // a MySQL or MongoDB entry.
+        const migrationDriver = this.drivers.forEntry(dbEntry!);
+        if (!migrationDriver.capabilities.migration) {
+          await this.auditDeny(msg, permissionLevel, {
+            action: 'migration_run',
+            denial_reason: 'unsupported_database_operation',
+          });
+          return this.sendError(
+            msg,
+            'unsupported_database_operation',
+            `Migrations are not supported for ${migrationDriver.display_name}.`,
+            undefined,
+            resolvedAlias,
+          );
+        }
         statements = payload.statements;
         sql = statements[0] ?? '';
         intent = 'migration';
@@ -502,6 +553,24 @@ export class Dispatcher {
             msg,
             'role_insufficient',
             `Role '${msg.user.role}' cannot introspect`,
+            undefined,
+            resolvedAlias,
+          );
+        }
+
+        // Introspection reads PostgreSQL catalogues. A MySQL or MongoDB entry
+        // has no equivalent implementation, so the request is refused before an
+        // "allowed" record is written for an operation that cannot happen.
+        const introspectDriver = this.drivers.forEntry(dbEntry!);
+        if (!introspectDriver.capabilities.introspect) {
+          await this.auditDeny(msg, permissionLevel, {
+            action: 'introspect',
+            denial_reason: 'unsupported_database_operation',
+          });
+          return this.sendError(
+            msg,
+            'unsupported_database_operation',
+            `Schema introspection is not supported for ${introspectDriver.display_name}.`,
             undefined,
             resolvedAlias,
           );
@@ -593,8 +662,7 @@ export class Dispatcher {
             await this.auditDeny(msg, permissionLevel, {
               action: mapMessageTypeToAuditAction(msg.type),
               denial_reason: 'plan_scope_mismatch',
-              statement_fingerprint: fingerprintStatement(sql),
-              statement_preview: previewStatement(sql),
+              ...this.statementAuditFields(sql, dbTypeOf(dbEntry!)),
               migration_plan_id: planId,
             });
             return this.sendError(
@@ -612,7 +680,11 @@ export class Dispatcher {
         // concurrency permit if the approval is still outstanding after the
         // window plus slack, so permit release never depends on the approval
         // promise settling.
-        watchdog = this.armApprovalWatchdog(msg, permissionLevel, permit, { planId, sql });
+        watchdog = this.armApprovalWatchdog(msg, permissionLevel, permit, {
+          planId,
+          sql,
+          dbType: dbTypeOf(dbEntry!),
+        });
 
         // The checker parses; we reuse its verdict rather than parsing again.
         //
@@ -635,6 +707,7 @@ export class Dispatcher {
             message_type: msg.type,
             request_id: msg.id,
             db_alias: msg.db_alias,
+            db_type: dbEntry ? dbTypeOf(dbEntry) : undefined,
             project: msg.project ?? '',
             // The RESOLVED pair, so a plan bound to production cannot be run by
             // a frame that names dev and the audit trail names the
@@ -644,7 +717,13 @@ export class Dispatcher {
             user: msg.user,
           },
           statements,
-          dbEntry ? functionEffectResolverForPool(this.opts.poolManager, dbEntry) : undefined,
+          // Function effects are answered by `pg_proc`, so the resolver only
+          // applies to PostgreSQL. MySQL refuses stored functions by shape and
+          // MongoDB has no function-call surface; asking a PG catalogue about
+          // either would be answering about the wrong server.
+          dbEntry && dbTypeOf(dbEntry) === 'postgres'
+            ? functionEffectResolverForPool(this.opts.poolManager, dbEntry)
+            : undefined,
         );
 
         decisionClassification = decision.classification;
@@ -667,8 +746,7 @@ export class Dispatcher {
               decision: 'deny',
               outcome: 'n/a',
               denial_reason: safeAuditReason(decision.code),
-              statement_fingerprint: fingerprintStatement(sql),
-              statement_preview: previewStatement(sql),
+              ...this.statementAuditFields(sql, dbTypeOf(dbEntry!)),
               migration_plan_id: planId,
             });
           }
@@ -690,21 +768,26 @@ export class Dispatcher {
             action: mapMessageTypeToAuditAction(msg.type),
             decision: 'allow',
             outcome: 'n/a',
-            statement_fingerprint: fingerprintStatement(sql),
-            statement_preview: previewStatement(sql),
+            ...this.statementAuditFields(sql, dbTypeOf(dbEntry!)),
             migration_plan_id: planId,
           });
         }
       }
 
       const classification = decisionClassification;
+      const driver = this.drivers.forEntry(dbEntry!);
+      // A read-only permission level is enforced by the engine as well as by
+      // the classifier: MySQL sets the session to a read-only transaction, so a
+      // write the classifier missed is still refused by the server.
+      const readOnlySession = permissionLevel === 'read_only';
 
       if (msg.type === 'query') {
         try {
-          const result = await this.opts.queryRunner.runOneShot(msg.payload as QueryPayload, {
+          const result = await driver.runOneShot(msg.payload as QueryPayload, {
             dbEntry: dbEntry!,
             request_id: msg.id,
             classification,
+            readOnlySession,
             registerInFlight: (req) => {
               req.message = msg;
               // The canceller can only abort `req.abort`, so the controller the
@@ -727,8 +810,7 @@ export class Dispatcher {
               action: 'query',
               decision: 'allow',
               outcome: 'success',
-              statement_fingerprint: fingerprintStatement(sql),
-              statement_preview: previewStatement(sql),
+              ...this.statementAuditFields(sql, dbTypeOf(dbEntry!)),
               duration_ms: elapsedMs,
               rows_affected: result.rows_affected,
               rows_returned: result.rows?.length ?? 0,
@@ -758,8 +840,7 @@ export class Dispatcher {
               action: 'query',
               decision: 'allow',
               outcome,
-              statement_fingerprint: fingerprintStatement(sql),
-              statement_preview: previewStatement(sql),
+              ...this.statementAuditFields(sql, dbTypeOf(dbEntry!)),
               duration_ms: elapsedMs,
               error_code: safeAuditCode(errorObj.code),
             });
@@ -773,10 +854,11 @@ export class Dispatcher {
         // the frame was written.
         let streamTerminated = false;
         try {
-          await this.opts.queryRunner.runStreaming(msg.payload as StreamQueryPayload, {
+          await driver.runStreaming(msg.payload as StreamQueryPayload, {
             dbEntry: dbEntry!,
             request_id: msg.id,
             classification,
+            readOnlySession,
             registerInFlight: (req) => {
               req.message = msg;
               req.abort = abortController;
@@ -827,8 +909,7 @@ export class Dispatcher {
                   action: 'stream_query',
                   decision: 'allow',
                   outcome: 'success',
-                  statement_fingerprint: fingerprintStatement(sql),
-                  statement_preview: previewStatement(sql),
+                  ...this.statementAuditFields(sql, dbTypeOf(dbEntry!)),
                   duration_ms: elapsedMs,
                   rows_returned: end.total_rows,
                 });
@@ -859,8 +940,7 @@ export class Dispatcher {
               action: 'stream_query',
               decision: 'allow',
               outcome,
-              statement_fingerprint: fingerprintStatement(sql),
-              statement_preview: previewStatement(sql),
+              ...this.statementAuditFields(sql, dbTypeOf(dbEntry!)),
               duration_ms: elapsedMs,
               error_code: errorCode,
             });
@@ -901,8 +981,7 @@ export class Dispatcher {
               action: 'migration_run',
               decision: 'allow',
               outcome: result.status === 'committed' ? 'success' : 'error',
-              statement_fingerprint: fingerprintStatement(sql),
-              statement_preview: previewStatement(sql),
+              ...this.statementAuditFields(sql, dbTypeOf(dbEntry!)),
               duration_ms: elapsedMs,
               migration_plan_id: planId,
             });
@@ -977,8 +1056,7 @@ export class Dispatcher {
               action: 'migration_run',
               decision: 'allow',
               outcome: 'error',
-              statement_fingerprint: fingerprintStatement(sql),
-              statement_preview: previewStatement(sql),
+              ...this.statementAuditFields(sql, dbTypeOf(dbEntry!)),
               duration_ms: elapsedMs,
               error_code: safeAuditCode(errorObj.code),
               migration_plan_id: planId,
@@ -1039,7 +1117,7 @@ export class Dispatcher {
     msg: AgentMessage,
     permissionLevel: PermissionLevel,
     permit: RateLimitPermit,
-    context: { planId?: string; sql?: string } = {},
+    context: { planId?: string; sql?: string; dbType?: DbType } = {},
   ): NodeJS.Timeout {
     const handler = this.opts.permissionChecker.opts?.manualApprovalHandler;
     // Deliberately LATER than the handler's own reaper. The handler settles the
@@ -1066,10 +1144,7 @@ export class Dispatcher {
           // indistinguishable from the leak this record exists to catch.
           ...(context.planId ? { migration_plan_id: context.planId } : {}),
           ...(context.sql
-            ? {
-                statement_fingerprint: fingerprintStatement(context.sql),
-                statement_preview: previewStatement(context.sql),
-              }
+            ? this.statementAuditFields(context.sql, context.dbType ?? 'postgres')
             : {}),
         });
       } catch (err: unknown) {
@@ -1182,6 +1257,27 @@ export class Dispatcher {
       );
     }
 
+    // Cancelling a MySQL or MongoDB request would reach the PostgreSQL
+    // canceller, which opens a `pg` connection and calls `pg_cancel_backend`.
+    // The driver declares whether that is possible; if it is not, the request
+    // is refused rather than reported as a cancellation that never happened.
+    const targetDriver = this.drivers.forEntry(targetResolution.entry);
+    if (!targetDriver.capabilities.server_cancel) {
+      await this.auditDeny(msg, permissionLevel, {
+        action: 'cancel',
+        denial_reason: 'unsupported_database_operation',
+        ...targetFields,
+      });
+      return this.sendError(
+        msg,
+        'unsupported_database_operation',
+        `Cancelling a request on ${targetDriver.display_name} is not supported. ` +
+          'The request stops when it reaches its own timeout.',
+        undefined,
+        resolvedAlias,
+      );
+    }
+
     // A cancellation acts on the TARGET's database, so the record is attributed
     // to the database the cancellation actually reached.
     return withResolvedDatabase(resolvedIdentityOf(targetResolution.entry), async () => {
@@ -1276,6 +1372,53 @@ export class Dispatcher {
           errorObj.name === 'QueryCancelledError'
             ? 'Query was cancelled'
             : 'The statement exceeded the configured timeout.',
+      });
+    }
+
+    // MySQL's per-query timeout destroys the connection and reports this code.
+    // It is a timeout, not an internal fault.
+    if (errorObj.code === 'PROTOCOL_SEQUENCE_TIMEOUT') {
+      return makeError('query_timeout', requestId, {
+        message: 'The statement exceeded the configured timeout.',
+      });
+    }
+
+    if (errorObj.name === 'MongoOperationTimeoutError') {
+      return makeError('query_timeout', requestId, {
+        message: 'The command exceeded the configured timeout.',
+      });
+    }
+
+    // MongoDB driver errors carry no PostgreSQL SQLSTATE. Their text can name a
+    // server or an index, so it is sanitized like any other execution failure.
+    const mongoLike = err as { name?: unknown };
+    if (typeof mongoLike.name === 'string' && mongoLike.name.startsWith('Mongo')) {
+      return makeError('execution_failed', requestId, {
+        message: sanitizeErrorText(errorObj.message ?? 'The MongoDB server rejected the command.', opts),
+      });
+    }
+
+    // mysql2 errors carry `errno`/`sqlState` rather than a SQLSTATE `code`.
+    const mysqlLike = err as { errno?: unknown; sqlState?: unknown; sqlMessage?: unknown };
+    // ER_QUERY_TIMEOUT: the server-side `max_execution_time` guard fired.
+    if (mysqlLike.errno === 3024) {
+      return makeError('query_timeout', requestId, {
+        message: 'The statement exceeded the configured timeout.',
+      });
+    }
+    // ER_QUERY_INTERRUPTED: the statement was killed on the server.
+    if (mysqlLike.errno === 1317) {
+      return makeError('query_cancelled', requestId, {
+        message: 'The statement was interrupted on the server.',
+      });
+    }
+    if (typeof mysqlLike.errno === 'number' || typeof mysqlLike.sqlState === 'string') {
+      const text =
+        typeof mysqlLike.sqlMessage === 'string'
+          ? mysqlLike.sqlMessage
+          : (errorObj.message ?? 'The MySQL server rejected the statement.');
+      return makeError('execution_failed', requestId, {
+        message: sanitizeErrorText(text, opts),
       });
     }
 

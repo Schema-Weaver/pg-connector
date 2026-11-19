@@ -38,6 +38,10 @@ import { CloudAuditWriter } from '../../audit/cloud-writer';
 import { AgentSession } from '../../channels/agent-session';
 import { DbEntry } from '../../config/db-config';
 import { initSqlParser } from '../../execution/sql-parser';
+import { DriverRegistry } from '../../drivers/registry';
+import { PostgresDriver } from '../../drivers/postgres';
+import { MysqlDriver } from '../../drivers/mysql';
+import { MongoDriver } from '../../drivers/mongodb';
 import { VERSION } from '../../index';
 
 export interface RuntimeOptions {
@@ -1158,12 +1162,6 @@ export async function runAgent(opts: RuntimeOptions): Promise<number> {
     auditSink,
   });
 
-  const permissionChecker = new PermissionChecker({
-    autoUpgradeChecker,
-    manualApprovalHandler,
-    planRegistry,
-  });
-
   const stats = new RuntimeStats();
 
   const originalLog = auditSink.log.bind(auditSink);
@@ -1214,6 +1212,28 @@ export async function runAgent(opts: RuntimeOptions): Promise<number> {
 
   // Create dispatcher dependencies
   const queryRunner = new QueryRunner({ poolManager });
+
+  // The engine registry. PostgreSQL wraps the objects above unchanged; the two
+  // new drivers own their own pools and never borrow a `pg` connection.
+  const drivers = new DriverRegistry([
+    new PostgresDriver({ poolManager, queryRunner }),
+    new MysqlDriver(),
+    new MongoDriver(),
+  ]);
+
+  // PostgreSQL is the checker's built-in default. The other classifiers are
+  // registered here so a frame can only ever be classified by the grammar of
+  // the database it resolved to.
+  const permissionChecker = new PermissionChecker({
+    autoUpgradeChecker,
+    manualApprovalHandler,
+    planRegistry,
+    classifiers: {
+      mysql: (sql, options) => drivers.get('mysql').classify(sql, options),
+      mongodb: (sql, options) => drivers.get('mongodb').classify(sql, options),
+    },
+  });
+
   const migrationRunner = new MigrationRunner({ poolManager });
   // The pool manager is required here, not optional: without it every cancel
   // opened a fresh TCP + TLS + password-authenticated connection, so a stream
@@ -1269,6 +1289,7 @@ export async function runAgent(opts: RuntimeOptions): Promise<number> {
     introspector,
     permissionChecker,
     planRegistry,
+    drivers,
     lookupDb,
     getMachineConfig: () => opts.machineConfig,
     send: (msg) => session.send(msg),
@@ -1305,6 +1326,18 @@ export async function runAgent(opts: RuntimeOptions): Promise<number> {
   // 1. pool-manager: wait for active queries to finish
   shutdown.register('pool-manager', async () => {
     await poolManager.closeAll();
+  });
+
+  // 1b. non-PostgreSQL drivers own their own clients and are not reachable
+  //     through the pool manager. PostgreSQL is excluded here because the step
+  //     above already closed its pools through the same PoolManager instance.
+  shutdown.register('database-drivers', async () => {
+    await Promise.allSettled(
+      drivers
+        .list()
+        .filter((driver) => driver.type !== 'postgres')
+        .map((driver) => driver.closeAll()),
+    );
   });
 
   // 2. agent-session: close websocket (data channel)
@@ -1463,6 +1496,15 @@ export async function runAgent(opts: RuntimeOptions): Promise<number> {
         console.error(
           `[config] Closed ${closed.length} connection pool(s) whose settings changed: ${closed.join(', ')}.`,
         );
+      }
+
+      // MySQL and MongoDB own their pools outside the PostgreSQL pool manager.
+      // They are closed wholesale on a config change so a rotated password or a
+      // new host cannot keep serving from a client built with the old settings.
+      // The next request rebuilds them from the new entries.
+      for (const driver of drivers.list()) {
+        if (driver.type === 'postgres') continue;
+        await driver.closeAll();
       }
 
       await writeStatus();

@@ -1,7 +1,9 @@
-import { loadDbConfig, dbConfigExists } from '../../config/db-config';
+import { loadDbConfig, dbConfigExists, redactDbEntry } from '../../config/db-config';
 import { isReplMode } from '../prompt';
 import { C, S, renderTable, createSpinner } from '../ui';
 import { Pool, PoolConfig } from 'pg';
+import { dbTypeOf } from '../../drivers/config-shape';
+import { createDriverForEntry } from '../../drivers/factory';
 
 function exit_(code: number): never {
   if (isReplMode()) {
@@ -25,10 +27,9 @@ export async function runDbLs(args: string[]): Promise<void> {
   const checkReachable = args.includes('--reachable');
 
   if (args.includes('--json')) {
-    const redacted = config.map((db) => ({
-      ...db,
-      password_stored: db.password_stored ? '***' : undefined,
-    }));
+    // Driver-specific redaction keeps `db_type`, `srv`, read preference and
+    // auth source visible for inventory while removing the stored password.
+    const redacted = config.map((db) => redactDbEntry(db));
     console.log(JSON.stringify(redacted, null, 2));
     exit_(0);
   }
@@ -52,6 +53,24 @@ export async function runDbLs(args: string[]): Promise<void> {
             reachableMap.set(db.db_alias, false);
             return;
           }
+
+          if (dbTypeOf(db) !== 'postgres') {
+            const driver = createDriverForEntry(db);
+            if (!driver) {
+              reachableMap.set(db.db_alias, false);
+              return;
+            }
+            try {
+              await driver.testConnection(db);
+              reachableMap.set(db.db_alias, true);
+            } catch {
+              reachableMap.set(db.db_alias, false);
+            } finally {
+              await driver.closeAll().catch(() => undefined);
+            }
+            return;
+          }
+
           const poolCfg: PoolConfig = {
             host: db.host,
             port: db.port,
@@ -92,6 +111,7 @@ export async function runDbLs(args: string[]): Promise<void> {
         : C.red(db.db_alias)
       : C.cyan(db.db_alias),
     project: db.project_name ? C.white(db.project_name) : C.dim('-'),
+    kind: C.magenta(dbTypeOf(db)),
     host: `${db.host}:${db.port}`,
     database: C.white(db.database),
     user: C.white(db.user),
@@ -107,6 +127,7 @@ export async function runDbLs(args: string[]): Promise<void> {
       columns: [
         { key: 'alias', header: 'ALIAS', minWidth: 10, maxWidth: 18, priority: 0 },
         { key: 'project', header: 'PROJECT', minWidth: 10, maxWidth: 18, priority: 1 },
+        { key: 'kind', header: 'TYPE', minWidth: 8, maxWidth: 10, priority: 4 },
         { key: 'host', header: 'HOST', minWidth: 14, maxWidth: 30, priority: 2 },
         { key: 'database', header: 'DATABASE', minWidth: 10, maxWidth: 18, priority: 3 },
         { key: 'user', header: 'USER', minWidth: 8, maxWidth: 16, priority: 5 },

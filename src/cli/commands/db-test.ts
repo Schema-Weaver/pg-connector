@@ -1,4 +1,5 @@
 import { findDbEntry, dbConfigExists, loadDbConfig, DbEntry } from '../../config/db-config';
+import { redactSecrets } from '../../config/schema';
 import { Pool, PoolConfig } from 'pg';
 import { isReplMode } from '../prompt';
 import { C, S, createSpinner, renderTable } from '../ui';
@@ -17,6 +18,8 @@ import {
   type LocalSqlDeps,
 } from './db-query';
 import type { PermissionLevel } from '../../permissions/types';
+import { dbTypeOf } from '../../drivers/config-shape';
+import { createDriverForEntry } from '../../drivers/factory';
 
 function exit_(code: number): never {
   if (isReplMode()) {
@@ -204,6 +207,67 @@ async function testOne(
     password,
     connectionTimeoutMillis: 5000,
   };
+
+  // MySQL and MongoDB are probed through their drivers, not with PostgreSQL SQL.
+  // The driver's `testConnection` reports the server identity and proves the
+  // credentials; `--detailed` PostgreSQL diagnostics do not apply.
+  if (dbTypeOf(entry) !== 'postgres') {
+    const startTime = Date.now();
+    const driver = createDriverForEntry(entry);
+    if (!driver) {
+      return {
+        alias: entry.db_alias,
+        host: `${entry.host}:${entry.port}`,
+        ok: false,
+        latency: 0,
+        version: '',
+        database: entry.database,
+        user: entry.user,
+        error: `no driver is registered for '${dbTypeOf(entry)}'`,
+        permission_level: permissionLevel,
+      };
+    }
+    try {
+      const info = await driver.testConnection(entry);
+      return {
+        alias: entry.db_alias,
+        host: `${entry.host}:${entry.port}`,
+        ok: true,
+        latency: Date.now() - startTime,
+        version: info.version,
+        database: info.database,
+        user: info.user,
+        error: '',
+        permission_level: permissionLevel,
+        ...(detailed
+          ? {
+              probeNote:
+                'detailed diagnostics are PostgreSQL-only; engine and connectivity were verified',
+            }
+          : {}),
+      };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      // The driver resolves `password_env` internally; include that live value
+      // in the redaction list so an echoed connection string cannot reveal it.
+      const secret =
+        entry.password_stored ||
+        (entry.password_env ? process.env[entry.password_env] : undefined);
+      return {
+        alias: entry.db_alias,
+        host: `${entry.host}:${entry.port}`,
+        ok: false,
+        latency: Date.now() - startTime,
+        version: '',
+        database: entry.database,
+        user: entry.user,
+        error: redactSecrets(message, secret),
+        permission_level: permissionLevel,
+      };
+    } finally {
+      await driver.closeAll().catch(() => undefined);
+    }
+  }
 
   const ssl = buildSslConfig(entry.ssl_mode, entry.ssl_root_cert);
   if (ssl) {

@@ -1,5 +1,6 @@
 import { Role } from '../protocol/envelope';
 import { StatementClassification } from '../execution/types';
+import type { DbType } from '../drivers/config-shape';
 
 export type PermissionLevel = 'read_only' | 'auto_upgrade' | 'manual' | 'full';
 
@@ -21,6 +22,13 @@ export interface ActionRequest {
   request_id: string;
   /** Which DB alias this targets. */
   db_alias: string;
+  /**
+   * Engine of the resolved entry.
+   *
+   * `PermissionChecker` uses this to select the classifier. Absent means
+   * PostgreSQL, which keeps every pre-driver caller working unchanged.
+   */
+  db_type?: DbType;
   /** The project name. */
   project: string;
   /**

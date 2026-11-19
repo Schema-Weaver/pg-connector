@@ -14,6 +14,9 @@ import { classifyStatement } from '../execution/statement-classifier';
 import type { FunctionEffectResolver } from '../execution/function-effects';
 import { SqlParseError, SqlParserUnavailableError } from '../execution/sql-parser';
 import { previewStatement } from '../audit/redact';
+import type { DbType } from '../drivers/config-shape';
+import type { StatementClassifier } from '../drivers/types';
+import { DriverParseError, DriverParserUnavailableError } from '../drivers/errors';
 
 export { PermissionLevel };
 
@@ -30,6 +33,15 @@ export interface PermissionCheckerOptions {
    * keeps one resolver per database entry rather than one per call.
    */
   resolveFunctionEffects?: FunctionEffectResolver;
+  /**
+   * Classifiers for engines other than PostgreSQL.
+   *
+   * PostgreSQL is the default and is imported directly, so an existing caller
+   * that supplies no map keeps its exact behaviour. A non-PostgreSQL request
+   * that reaches a checker without a matching classifier is refused as
+   * `parser_unavailable`; it is never classified by the PostgreSQL grammar.
+   */
+  classifiers?: Partial<Record<DbType, StatementClassifier>>;
 }
 
 export class PermissionChecker {
@@ -37,6 +49,16 @@ export class PermissionChecker {
 
   constructor(opts: PermissionCheckerOptions) {
     this.opts = opts;
+  }
+
+  /**
+   * The classifier for an engine. PostgreSQL is the built-in default.
+   */
+  private classifierFor(dbType: DbType): StatementClassifier | undefined {
+    if (dbType === 'postgres') {
+      return (sql, options) => classifyStatement(sql, options);
+    }
+    return this.opts.classifiers?.[dbType];
   }
 
   /**
@@ -82,28 +104,44 @@ export class PermissionChecker {
     const perStatement: StatementClassification[] = [];
 
     const statementsToParse = isMigrationRun ? (statements ?? [req.sql]) : [req.sql];
+    const dbType: DbType = req.db_type ?? 'postgres';
+    const classifier = this.classifierFor(dbType);
+    const engine = engineName(dbType);
+
+    if (!classifier) {
+      return {
+        allowed: false,
+        reason:
+          `No ${engine} classifier is registered, so the statement cannot be verified. ` +
+          'Refusing to execute unverified input.',
+        code: 'parser_unavailable',
+      };
+    }
 
     for (let i = 0; i < statementsToParse.length; i++) {
       let c: StatementClassification;
       try {
-        c = await classifyStatement(statementsToParse[i], {
+        c = await classifier(statementsToParse[i], {
           resolveFunctionEffects: resolveEffects,
         });
       } catch (err: unknown) {
-        if (err instanceof SqlParserUnavailableError) {
+        if (
+          err instanceof SqlParserUnavailableError ||
+          err instanceof DriverParserUnavailableError
+        ) {
           return {
             allowed: false,
             reason:
-              'The PostgreSQL parser is unavailable, so the statement cannot be verified. ' +
-              'Refusing to execute unverified SQL.',
+              `The ${engine} parser is unavailable, so the statement cannot be verified. ` +
+              'Refusing to execute unverified input.',
             code: 'parser_unavailable',
           };
         }
-        if (err instanceof SqlParseError) {
+        if (err instanceof SqlParseError || err instanceof DriverParseError) {
           const where = statementsToParse.length > 1 ? ` (statement ${i + 1})` : '';
           return {
             allowed: false,
-            reason: `PostgreSQL could not parse the statement${where}: ${err.message}`,
+            reason: `${engine} could not parse the statement${where}: ${err.message}`,
             code: 'unparseable_statement',
           };
         }
@@ -134,7 +172,7 @@ export class PermissionChecker {
       return {
         allowed: false,
         reason:
-          `Expected exactly one statement${where} but PostgreSQL's parser found ` +
+          `Expected exactly one statement${where} but the ${engine} parser found ` +
           `${offenders[0].statement_count} in one of them. Multi-statement execution is ` +
           'refused because it would run every statement regardless of how it is classified.',
         code: 'multiple_statements',
@@ -176,7 +214,7 @@ export class PermissionChecker {
     if (!intentMatches) {
       return {
         allowed: false,
-        reason: `Intent mismatch: request declared '${claimed}' but PostgreSQL parsed it as '${actualType}' (${actualClassification.verb}${
+        reason: `Intent mismatch: request declared '${claimed}' but ${engine} parsed it as '${actualType}' (${actualClassification.verb}${
           actualClassification.kind !== actualClassification.verb
             ? ' ' + actualClassification.kind
             : ''
@@ -225,8 +263,11 @@ export class PermissionChecker {
             allowed: false,
             reason:
               `Read-only mode: ${explainWhyNotAProvableRead(actualClassification)}. ` +
-              'PostgreSQL will not refuse it for you: default_transaction_read_only = on ' +
-              'constrains writes to relations, not reads, notifications or function bodies.',
+              (dbType === 'postgres'
+                ? 'PostgreSQL will not refuse it for you: default_transaction_read_only = on ' +
+                  'constrains writes to relations, not reads, notifications or function bodies.'
+                : `The ${engine} database enforces a read-only transaction, but a statement ` +
+                  'that is not provably a read is refused before it reaches the server.'),
             code: 'permission_denied',
             classification: actualClassification,
           };
@@ -283,7 +324,7 @@ export class PermissionChecker {
         // carry PII literals and this event crosses the cloud boundary.
         const approvalRequest = {
           request_id: req.request_id,
-          sql_preview: previewStatement(req.sql),
+          sql_preview: previewStatement(req.sql, req.db_type ?? 'postgres'),
           intent: actualClassification.type === 'write' ? ('write' as const) : ('ddl' as const),
           db_alias: req.db_alias,
         };
@@ -330,6 +371,18 @@ export class PermissionChecker {
  * This is what stops `['SELECT 1', 'DROP TABLE users']` from being treated as a
  * read because its first statement is one.
  */
+function engineName(type: DbType): string {
+  switch (type) {
+    case 'mysql':
+      return 'MySQL';
+    case 'mongodb':
+      return 'MongoDB';
+    case 'postgres':
+    default:
+      return 'PostgreSQL';
+  }
+}
+
 function aggregateClassification(parts: StatementClassification[]): StatementClassification {
   if (parts.length === 0) {
     return {

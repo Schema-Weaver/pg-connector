@@ -23,6 +23,11 @@ import { machineConfigExists, loadMachineConfig } from '../../config/machine-con
 import { getSwAgentDir } from '../../config/paths';
 import { isReplMode } from '../prompt';
 import { C, S, renderTable, clearScreen, createSpinner, terminalWidth, truncateAnsi } from '../ui';
+import { dbTypeOf } from '../../drivers/config-shape';
+import { createDriverForEntry } from '../../drivers/factory';
+import { classifyMysqlStatement } from '../../drivers/mysql-classifier';
+import { classifyMongoStatement } from '../../drivers/mongodb-classifier';
+import type { QueryResultPayload } from '../../protocol/messages';
 
 /* ------------------------------------------------------------------ */
 /* Local SQL policy                                                    */
@@ -170,11 +175,24 @@ async function authoriseLocalSql(
   req: LocalSqlRequest,
   resolveFunctionEffects?: FunctionEffectResolver,
 ): Promise<{ classification: StatementClassification; allowed: boolean; reason: string }> {
-  // Idempotent. Without it the CLI would refuse every statement, because the
-  // parser is fail-closed when it has not been loaded.
-  await initSqlParser();
+  const dbType = dbTypeOf(req.entry);
+  let classification: StatementClassification;
 
-  const classification = await classifyStatement(req.sql, { resolveFunctionEffects });
+  if (dbType === 'postgres') {
+    // Idempotent. Without it the CLI would refuse every statement, because the
+    // parser is fail-closed when it has not been loaded.
+    await initSqlParser();
+    classification = await classifyStatement(req.sql, { resolveFunctionEffects });
+  } else {
+    const driver = createDriverForEntry(req.entry);
+    if (!driver) {
+      throw new Error(`No classifier is available for database type '${dbType}'.`);
+    }
+    // Classification opens no connection, so the instance is discarded here and
+    // a fresh one is built for execution.
+    classification = await driver.classify(req.sql);
+  }
+
   const intent = INTENT_BY_CLASSIFICATION[classification.type];
 
   if (!intent) {
@@ -185,8 +203,8 @@ async function authoriseLocalSql(
         `Statement class '${classification.type}' (${classification.kind}) cannot be authorised on the ` +
         'local SQL path. Only read, write and DDL statements are classified into an ' +
         'authorisable intent; session/transaction utilities and unrecognised ' +
-        'statements must not be relabelled. Use a direct PostgreSQL client if you ' +
-        'need them.',
+        'statements must not be relabelled. Use a direct client for the engine if ' +
+        'you need them.',
     };
   }
 
@@ -199,6 +217,7 @@ async function authoriseLocalSql(
       message_type: req.action,
       request_id: `local-${Date.now().toString(36)}`,
       db_alias: req.entry.db_alias,
+      db_type: dbType,
       project: req.entry.project_name ?? req.entry.db_alias,
       user: { id: LOCAL_OPERATOR_ID, role: LOCAL_OPERATOR_ROLE },
     },
@@ -278,8 +297,8 @@ async function appendLocalAudit(
     decision: fields.decision,
     outcome: fields.outcome,
     permission_level: deps.permissionLevel,
-    statement_preview: previewStatement(req.sql),
-    statement_fingerprint: fingerprintStatement(req.sql),
+    statement_preview: previewStatement(req.sql, dbTypeOf(req.entry)),
+    statement_fingerprint: fingerprintStatement(req.sql, dbTypeOf(req.entry)),
     denial_reason: fields.reason,
     error_code: fields.errorCode,
     duration_ms: fields.durationMs,
@@ -309,6 +328,38 @@ function asQueryResult(res: RawQueryResult): LocalQueryResult {
     fields: res?.fields ?? [],
     rowCount: res?.rowCount ?? null,
     command: res?.command ?? '',
+  };
+}
+
+/**
+ * Present a driver result in the row-object shape the local UI renders.
+ *
+ * The wire shape is arrays in column order; the CLI has always rendered objects
+ * keyed by column name. Duplicate column names overwrite, which is the same
+ * behaviour a `SELECT a.id, b.id` has in the PostgreSQL path.
+ */
+function driverResultToLocal(result: QueryResultPayload, maxRows: number): LocalQueryResult {
+  const fields = result.columns.map((column) => ({ name: column.name }));
+  if (result.rows.length > maxRows) {
+    throw new LocalRowCapError(
+      `Result exceeds the local ceiling of ${maxRows} rows. ` +
+        'Narrow the result set or aggregate server-side.',
+    );
+  }
+
+  const rows: LocalRow[] = result.rows.map((values) => {
+    const row: LocalRow = {};
+    result.columns.forEach((column, index) => {
+      row[column.name] = values[index];
+    });
+    return row;
+  });
+
+  return {
+    rows,
+    fields,
+    rowCount: result.rows.length > 0 ? rows.length : result.rows_affected,
+    command: fields.length > 0 ? 'SELECT' : 'OK',
   };
 }
 
@@ -428,7 +479,13 @@ export async function executeLocalSql(
   const requestId = `local-${Date.now().toString(36)}`;
 
   let authorisation: { classification: StatementClassification; allowed: boolean; reason: string };
-  const effects = await localFunctionEffectResolver(deps, req.entry);
+  // `pg_proc` answers function effects for PostgreSQL only. MySQL denies stored
+  // functions by shape and MongoDB has no function surface, so neither opens a
+  // resolver connection.
+  const effects =
+    dbTypeOf(req.entry) === 'postgres'
+      ? await localFunctionEffectResolver(deps, req.entry)
+      : { resolver: undefined, dispose: async () => undefined };
   try {
     authorisation = await authoriseLocalSql(deps, req, effects.resolver);
   } catch (err) {
@@ -474,6 +531,71 @@ export async function executeLocalSql(
   });
 
   const startedAt = Date.now();
+
+  // MySQL and MongoDB do not use node-postgres, a server-side cursor, or
+  // PostgreSQL session settings. They run through their driver, which applies
+  // the engine's own read-only posture. The PostgreSQL path below is unchanged.
+  const driver = createDriverForEntry(req.entry);
+  if (driver) {
+    try {
+      const result = await driver.runOneShot(
+        {
+          sql: req.sql,
+          intent:
+            authorisation.classification.type === 'read'
+              ? 'read'
+              : authorisation.classification.type === 'ddl'
+                ? 'ddl'
+                : 'write',
+          timeout_ms: deps.timeoutMs ?? LOCAL_STATEMENT_TIMEOUT_MS,
+        },
+        {
+          dbEntry: req.entry,
+          request_id: requestId,
+          classification: authorisation.classification,
+          readOnlySession: deps.readOnlySession,
+        },
+      );
+
+      const local = driverResultToLocal(result, maxRows);
+
+      await deps.audit.logSync({
+        project: req.entry.project_name ?? req.entry.db_alias,
+        user_id: LOCAL_OPERATOR_ID,
+        actor: 'local',
+        role: LOCAL_OPERATOR_ROLE,
+        action: req.action,
+        decision: 'allow',
+        outcome: 'success',
+        permission_level: deps.permissionLevel,
+        statement_preview: previewStatement(req.sql, dbTypeOf(req.entry)),
+        statement_fingerprint: fingerprintStatement(req.sql, dbTypeOf(req.entry)),
+        duration_ms: Date.now() - startedAt,
+        rows_returned: local.rows.length,
+      });
+
+      return local;
+    } catch (err) {
+      await deps.audit.logSync({
+        project: req.entry.project_name ?? req.entry.db_alias,
+        user_id: LOCAL_OPERATOR_ID,
+        actor: 'local',
+        role: LOCAL_OPERATOR_ROLE,
+        action: req.action,
+        decision: 'allow',
+        outcome: 'error',
+        permission_level: deps.permissionLevel,
+        statement_preview: previewStatement(req.sql, dbTypeOf(req.entry)),
+        statement_fingerprint: fingerprintStatement(req.sql, dbTypeOf(req.entry)),
+        duration_ms: Date.now() - startedAt,
+        error_code: (err as { code?: string })?.code,
+      });
+      throw err;
+    } finally {
+      await driver.closeAll().catch(() => undefined);
+    }
+  }
+
   const pool = await deps.poolFactory(req.entry);
   let client: LocalClient | undefined;
   try {
@@ -497,8 +619,8 @@ export async function executeLocalSql(
       decision: 'allow',
       outcome: 'success',
       permission_level: deps.permissionLevel,
-      statement_preview: previewStatement(req.sql),
-      statement_fingerprint: fingerprintStatement(req.sql),
+      statement_preview: previewStatement(req.sql, dbTypeOf(req.entry)),
+      statement_fingerprint: fingerprintStatement(req.sql, dbTypeOf(req.entry)),
       duration_ms: Date.now() - startedAt,
       rows_returned: result.rows.length,
     });
@@ -514,8 +636,8 @@ export async function executeLocalSql(
       decision: 'allow',
       outcome: 'error',
       permission_level: deps.permissionLevel,
-      statement_preview: previewStatement(req.sql),
-      statement_fingerprint: fingerprintStatement(req.sql),
+      statement_preview: previewStatement(req.sql, dbTypeOf(req.entry)),
+      statement_fingerprint: fingerprintStatement(req.sql, dbTypeOf(req.entry)),
       duration_ms: Date.now() - startedAt,
       error_code: (err as { code?: string })?.code,
     });
@@ -576,6 +698,12 @@ export function createLocalPermissionChecker(audit: LocalAuditRecorder): Permiss
       auditSink: audit as unknown as AuditSink,
     }),
     planRegistry,
+    // The local path must classify through the same engine grammar as the
+    // daemon. PostgreSQL stays the checker's built-in default.
+    classifiers: {
+      mysql: classifyMysqlStatement,
+      mongodb: classifyMongoStatement,
+    },
   });
 }
 
@@ -685,7 +813,7 @@ export async function runDbQuery(args: string[]): Promise<void> {
   }
 
   const deps = createLocalSqlDeps(entry);
-  const preview = previewStatement(sql);
+  const preview = previewStatement(sql, dbTypeOf(entry));
   if (!isJson) {
     console.log();
     console.log(

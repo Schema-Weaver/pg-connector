@@ -7,12 +7,16 @@ import {
   ConfigError,
   ConfigInvalidError,
   isValidIdentifier,
-  isValidHostname,
-  isValidIpv4,
-  isValidIpv6,
   isValidEnvVarName,
   isValidIso8601,
 } from './schema';
+import {
+  DbType,
+  MongoReadConcern,
+  MongoReadPreference,
+  validateCommonFields,
+  validateDriverFields,
+} from '../drivers/config-shape';
 
 /**
  * Database-level config: databases.config.json
@@ -22,10 +26,28 @@ import {
 export interface DbEntry {
   project_name?: string; // optional metadata label
   db_alias: string; // unique across array
+  /**
+   * Engine this entry talks to.
+   *
+   * Optional so configs written before the driver split (which had no
+   * discriminator) keep loading as PostgreSQL. New entries always set it.
+   */
+  db_type?: DbType;
   host: string;
   port: number; // 1-65535
   database: string;
   user: string;
+  /**
+   * MongoDB only: use the `mongodb+srv://` seed-list form. `host` is the SRV
+   * name and `port` is ignored (the SRV/TXT records carry the real hosts).
+   */
+  srv?: boolean;
+  /** MongoDB only: authentication database. Defaults to the driver's choice. */
+  auth_source?: string | null;
+  /** MongoDB only: read preference. Forced to `primary` when omitted. */
+  read_preference?: MongoReadPreference | null;
+  /** MongoDB only: read concern. Forced to `local` when omitted. */
+  read_concern?: MongoReadConcern | null;
   password_env?: string; // OS env var name (optional)
   /**
    * Password in cleartext. Present only in memory: the on-disk form is an
@@ -483,35 +505,8 @@ export function validateDbConfig(raw: unknown): DbConfig {
     }
     aliases.add(alias);
 
-    const host = data.host;
-    if (
-      typeof host !== 'string' ||
-      host.trim().length === 0 ||
-      (!isValidHostname(host) && !isValidIpv4(host) && !isValidIpv6(host))
-    ) {
-      throw new ConfigInvalidError(
-        `Entry at index ${i} invalid: Field "host" must be a valid hostname or IP address`,
-      );
-    }
-
-    const port = data.port;
-    if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
-      throw new ConfigInvalidError(
-        `Entry at index ${i} invalid: Port must be between 1 and 65535.`,
-      );
-    }
-
-    const db = data.database;
-    if (typeof db !== 'string' || db.length === 0 || db.length > 63) {
-      throw new ConfigInvalidError(
-        `Entry at index ${i} invalid: Database name must be 1-63 characters`,
-      );
-    }
-
-    const user = data.user;
-    if (typeof user !== 'string' || user.length === 0 || user.length > 63) {
-      throw new ConfigInvalidError(`Entry at index ${i} invalid: Username must be 1-63 characters`);
-    }
+    validateCommonFields(data, i);
+    validateDriverFields(data, i);
 
     const pwEnv = data.password_env;
     const pwStored = data.password_stored;
@@ -534,13 +529,6 @@ export function validateDbConfig(raw: unknown): DbConfig {
     if (!pwEnv && !pwStored) {
       throw new ConfigInvalidError(
         `Entry at index ${i} invalid: Either password_env or password_stored is required.`,
-      );
-    }
-
-    const ssl = data.ssl_mode;
-    if (ssl !== 'disable' && ssl !== 'require' && ssl !== 'verify-ca' && ssl !== 'verify-full') {
-      throw new ConfigInvalidError(
-        `Entry at index ${i} invalid: ssl_mode must be disable, require, verify-ca, or verify-full`,
       );
     }
 
@@ -699,6 +687,22 @@ export function listProjects(): string[] {
     .map((e) => e.project_name)
     .filter((p): p is string => typeof p === 'string' && p.length > 0);
   return Array.from(new Set(projects)).sort();
+}
+
+/**
+ * A database entry safe to print or serialise.
+ *
+ * The stored password is replaced by a marker and an environment reference is
+ * kept as a NAME only — the value it points at is never read here. Driver
+ * specific fields are preserved so `db list --json` remains useful for
+ * inventory, but nothing that can authenticate is included.
+ */
+export function redactDbEntry(entry: DbEntry): Record<string, unknown> {
+  return {
+    ...entry,
+    db_type: entry.db_type ?? 'postgres',
+    password_stored: entry.password_stored ? '***' : undefined,
+  };
 }
 
 export interface DatabasesConfig {

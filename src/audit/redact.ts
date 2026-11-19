@@ -42,6 +42,17 @@ function isTagChar(ch: string | undefined): boolean {
 
 export type LexForm = 'string' | 'estring' | 'unicode_string' | 'dollar' | 'identifier';
 
+/**
+ * The grammar that decides which runs are literals.
+ *
+ * PostgreSQL and MySQL disagree about backslash escapes, quoted identifiers
+ * and comment forms. Applying the PostgreSQL lexer to MySQL text, or to a
+ * MongoDB JSON document whose strings contain `\"`, can close a literal early
+ * and print the remainder of a value as syntax. Every exported entry point
+ * therefore takes the dialect and defaults to `postgres` for compatibility.
+ */
+export type RedactDialect = 'postgres' | 'mysql' | 'mongodb';
+
 export type LexToken =
   | { kind: 'text'; value: string }
   /** `value` is the raw source slice; `open` is the length of its opening delimiter. */
@@ -79,11 +90,21 @@ export interface LexResult {
  * Anything the scan cannot account for reports `safe: false`, and the caller
  * must emit {@link UNREDACTABLE} rather than any part of the statement.
  */
-export function lexSql(sql: string): LexResult {
+export function lexSql(sql: string, dialect: RedactDialect = 'postgres'): LexResult {
   const tokens: LexToken[] = [];
+  const mysql = dialect === 'mysql';
   let text = '';
   const n = sql.length;
   let i = 0;
+
+  // MySQL only executes a conditional comment when these exact bytes occur.
+  // Checking the raw text first makes the refusal independent of the quote
+  // boundaries the lexer derives: under `NO_BACKSLASH_ESCAPES` a backslash-
+  // escaped quote can move those boundaries while the server still executes
+  // the comment.
+  if (mysql && (sql.includes('/*!') || sql.includes('/*M!'))) {
+    return { safe: false, reason: 'executable MySQL comment', tokens: [] };
+  }
 
   const flush = (): void => {
     if (text.length > 0) {
@@ -95,6 +116,14 @@ export function lexSql(sql: string): LexResult {
   while (i < n) {
     const ch = sql[i];
 
+    // MySQL adds `#` line comments. The branch is dialect-gated because `#` is
+    // ordinary syntax in PostgreSQL and in a MongoDB collection name.
+    if (mysql && ch === '#') {
+      const nl = sql.indexOf('\n', i + 1);
+      i = nl === -1 ? n : nl;
+      continue;
+    }
+
     // Line comment: runs to end of line.
     if (ch === '-' && sql[i + 1] === '-') {
       const nl = sql.indexOf('\n', i + 2);
@@ -102,8 +131,24 @@ export function lexSql(sql: string): LexResult {
       continue;
     }
 
-    // Block comment: PostgreSQL nests these.
+    // Block comment: PostgreSQL nests these; MySQL does not, so its first
+    // `*/` really does end the comment.
     if (ch === '/' && sql[i + 1] === '*') {
+      if (mysql) {
+        // MySQL splices `/*! … */` (and MariaDB's `/*M! … */`) into the
+        // statement even though every SQL parser treats them as comments. A
+        // preview that dropped the body would describe a different statement
+        // than the server runs, so the whole input is reported unredactable.
+        if (sql[i + 2] === '!' || (sql[i + 2] === 'M' && sql[i + 3] === '!')) {
+          return { safe: false, reason: 'executable MySQL comment', tokens: [] };
+        }
+        const close = sql.indexOf('*/', i + 2);
+        if (close === -1) {
+          return { safe: false, reason: 'unterminated block comment', tokens: [] };
+        }
+        i = close + 2;
+        continue;
+      }
       let depth = 0;
       let j = i;
       while (j < n) {
@@ -128,7 +173,7 @@ export function lexSql(sql: string): LexResult {
     // `U&'...'` unicode string and `U&"..."` unicode identifier. These are
     // lexed before the single-character cases because the introducer spans
     // three characters.
-    if ((ch === 'U' || ch === 'u') && sql[i + 1] === '&' && !isIdentPart(sql[i - 1] ?? '')) {
+    if (!mysql && (ch === 'U' || ch === 'u') && sql[i + 1] === '&' && !isIdentPart(sql[i - 1] ?? '')) {
       const quote = sql[i + 2];
       if (quote === "'" || quote === '"') {
         const r = lexSingleQuoted(sql, i + 2, true, quote);
@@ -147,7 +192,7 @@ export function lexSql(sql: string): LexResult {
 
     // Escape-string literal: E'...' with backslash escapes. The introducer must
     // not be the tail of a longer identifier (`fooE'x'` is `foo` then a string).
-    if ((ch === 'E' || ch === 'e') && sql[i + 1] === "'" && !isIdentPart(sql[i - 1] ?? '')) {
+    if (!mysql && (ch === 'E' || ch === 'e') && sql[i + 1] === "'" && !isIdentPart(sql[i - 1] ?? '')) {
       const r = lexSingleQuoted(sql, i + 1, true, "'");
       if (r.malformed) return { safe: false, reason: r.reason, tokens: [] };
       flush();
@@ -156,9 +201,12 @@ export function lexSql(sql: string): LexResult {
       continue;
     }
 
-    // Plain string literal: '...' with doubled-quote escapes.
+    // Plain string literal: '...' with doubled-quote escapes. MySQL also
+    // treats backslash as an escape, so it gets its own scanner.
     if (ch === "'") {
-      const r = lexSingleQuoted(sql, i, false, "'");
+      const r = mysql
+        ? lexMysqlQuoted(sql, i, "'")
+        : lexSingleQuoted(sql, i, false, "'");
       if (r.malformed) return { safe: false, reason: r.reason, tokens: [] };
       flush();
       tokens.push({ kind: 'literal', value: sql.slice(i, r.end), form: 'string', open: 1 });
@@ -166,8 +214,9 @@ export function lexSql(sql: string): LexResult {
       continue;
     }
 
-    // Dollar quote: $$...$$ and $tag$...$tag$.
-    if (ch === '$') {
+    // Dollar quote: $$...$$ and $tag$...$tag$. MySQL has no dollar quotes;
+    // `$` is ordinary syntax there, including inside identifiers.
+    if (!mysql && ch === '$') {
       const r = lexDollarQuote(sql, i);
       if (r.malformed) return { safe: false, reason: r.reason, tokens: [] };
       if (r.end > i) {
@@ -181,23 +230,38 @@ export function lexSql(sql: string): LexResult {
       continue;
     }
 
-    // Quoted identifier: "..." with doubled-quote escapes.
-    if (ch === '"') {
-      let j = i + 1;
-      while (j < n) {
-        if (sql[j] === '"') {
-          if (sql[j + 1] === '"') {
-            j += 2;
-            continue;
-          }
-          break;
-        }
-        j++;
-      }
-      if (j >= n) return { safe: false, reason: 'unterminated quoted identifier', tokens: [] };
+    // MySQL double-quoted runs are string literals by default (and remain data
+    // under ANSI_QUOTES), so redact them as strings either way.
+    if (mysql && ch === '"') {
+      const r = lexMysqlQuoted(sql, i, '"');
+      if (r.malformed) return { safe: false, reason: r.reason, tokens: [] };
       flush();
-      tokens.push({ kind: 'literal', value: sql.slice(i, j + 1), form: 'identifier', open: 1 });
-      i = j + 1;
+      tokens.push({ kind: 'literal', value: sql.slice(i, r.end), form: 'string', open: 1 });
+      i = r.end;
+      continue;
+    }
+
+    // MySQL backtick-quoted identifier. Backslash handling is conservative:
+    // treating it as an escape can only extend the token (and make the scan
+    // unsafe), never expose its body as text.
+    if (mysql && ch === '`') {
+      const r = lexMysqlQuoted(sql, i, '`');
+      if (r.malformed) return { safe: false, reason: r.reason, tokens: [] };
+      flush();
+      tokens.push({ kind: 'literal', value: sql.slice(i, r.end), form: 'identifier', open: 1 });
+      i = r.end;
+      continue;
+    }
+
+    // Quoted identifier: "..." with doubled-quote escapes.
+    if (!mysql && ch === '"') {
+      const r = lexSingleQuoted(sql, i, false, '"');
+      if (r.malformed) {
+        return { safe: false, reason: 'unterminated quoted identifier', tokens: [] };
+      }
+      flush();
+      tokens.push({ kind: 'literal', value: sql.slice(i, r.end), form: 'identifier', open: 1 });
+      i = r.end;
       continue;
     }
 
@@ -280,6 +344,42 @@ function lexSingleQuoted(
   return { end: start, malformed: true, reason: 'unterminated string literal' };
 }
 
+/**
+ * Scan a MySQL quoted run.
+ *
+ * MySQL recognizes a backslash escape in strings and, under some sql_modes,
+ * in backtick identifiers. Consuming exactly one character after a backslash is
+ * the important difference from {@link lexSingleQuoted}: `\'` is data, not the
+ * end of the literal. Doubling the delimiter is also an escape.
+ */
+function lexMysqlQuoted(
+  sql: string,
+  start: number,
+  delim: "'" | '"' | '`',
+): { end: number; malformed: boolean; reason?: string } {
+  const n = sql.length;
+  let i = start + 1;
+  while (i < n) {
+    const ch = sql[i];
+    if (ch === '\\') {
+      if (i + 1 >= n) {
+        return { end: start, malformed: true, reason: 'unterminated string literal' };
+      }
+      i += 2;
+      continue;
+    }
+    if (ch === delim) {
+      if (sql[i + 1] === delim) {
+        i += 2; // doubled-delimiter escape
+        continue;
+      }
+      return { end: i + 1, malformed: false };
+    }
+    i++;
+  }
+  return { end: start, malformed: true, reason: 'unterminated string literal' };
+}
+
 export interface RedactOptions {
   /**
    * Also replace `"..."` / `U&"..."` quoted identifiers with `?`.
@@ -330,6 +430,63 @@ export function redactTokens(tokens: LexToken[], redactIdentifiers = true): stri
     const close =
       t.form === 'dollar' ? t.value.slice(t.value.length - t.open) : t.value[t.value.length - 1];
     out += t.value.slice(0, t.open) + '?' + close;
+  }
+  return out;
+}
+
+/**
+ * Redact a MongoDB command represented as JSON.
+ *
+ * JSON string escaping is not SQL escaping: a `\"` inside a value closes a
+ * PostgreSQL quoted identifier early and leaves the rest of the value in
+ * `text`, which is how a MySQL- or JSON-specific lexer bypass would leak audit
+ * text. Parsing the document instead of lexing it removes that class of bug.
+ *
+ * String and numeric values are replaced with `?`; object keys, booleans and
+ * null are kept because they are the structural part of the command, just as
+ * unquoted identifiers are kept in a PostgreSQL preview. The top-level
+ * `collection` and `method` values are also kept: `method` is already restricted
+ * to four constants, and `collection` is schema metadata, not row data.
+ *
+ * Any document that is not a JSON object, or is nested too deeply, returns
+ * {@link UNREDACTABLE}.
+ */
+function redactMongoDocument(text: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return UNREDACTABLE;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return UNREDACTABLE;
+  }
+
+  try {
+    return JSON.stringify(redactMongoValue(parsed, 0));
+  } catch {
+    return UNREDACTABLE;
+  }
+}
+
+function redactMongoValue(value: unknown, depth: number): unknown {
+  if (depth > 100) throw new Error('document is nested too deeply');
+  if (typeof value === 'string') return '?';
+  if (typeof value === 'number' || typeof value === 'bigint') return '?';
+  if (value === null || typeof value !== 'object') return value;
+
+  if (Array.isArray(value)) {
+    return value.map((item) => redactMongoValue(item, depth + 1));
+  }
+
+  const topLevel = depth === 0;
+  const out: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value)) {
+    // `method` selects one of four constants and `collection` names schema
+    // metadata, so a top-level string is safe to retain. Everything else can
+    // carry a filter value or an option body.
+    const retain = topLevel && (key === 'method' || key === 'collection') && typeof nested === 'string';
+    out[key] = retain ? nested : redactMongoValue(nested, depth + 1);
   }
   return out;
 }
@@ -427,10 +584,17 @@ function operandPosition(emitted: string): boolean {
  * construct, or more than {@link MAX_SQL_SCAN_BYTES} — returns
  * {@link UNREDACTABLE} and no part of the statement text.
  */
-export function redactSqlLiterals(sql: string, opts: RedactOptions = {}): string {
+export function redactSqlLiterals(
+  sql: string,
+  opts: RedactOptions = {},
+  dialect: RedactDialect = 'postgres',
+): string {
   if (typeof sql !== 'string') return UNREDACTABLE;
   if (Buffer.byteLength(sql, 'utf8') > MAX_SQL_SCAN_BYTES) return UNREDACTABLE;
-  const lexed = lexSql(sql);
+  if (dialect === 'mongodb') {
+    return redactMongoDocument(sql);
+  }
+  const lexed = lexSql(sql, dialect);
   if (!lexed.safe) return UNREDACTABLE;
   const out = redactNumbers(redactTokens(lexed.tokens, opts.redactIdentifiers !== false));
   return opts.redactKeyValues === false ? out : out.replace(PG_KEY_VALUE_DETAIL, '= (?)');
@@ -517,14 +681,22 @@ function fingerprintTokens(tokens: LexToken[]): string {
  * unredactable statement. That is deliberate: deriving the id from raw text
  * would put attacker-chosen bytes into a value that leaves the process.
  */
-export function fingerprintStatement(sql: string): string {
-  const lexed =
-    typeof sql === 'string' && Buffer.byteLength(sql, 'utf8') <= MAX_SQL_SCAN_BYTES
-      ? lexSql(sql)
-      : { safe: false, tokens: [] as LexToken[] };
-  const normalized = (
-    lexed.safe ? redactNumbers(fingerprintTokens(lexed.tokens)) : UNREDACTABLE
-  )
+export function fingerprintStatement(
+  sql: string,
+  dialect: RedactDialect = 'postgres',
+): string {
+  let normalizedInput: string;
+  if (typeof sql !== 'string' || Buffer.byteLength(sql, 'utf8') > MAX_SQL_SCAN_BYTES) {
+    normalizedInput = UNREDACTABLE;
+  } else if (dialect === 'mongodb') {
+    normalizedInput = redactMongoDocument(sql);
+  } else {
+    const lexed = lexSql(sql, dialect);
+    normalizedInput = lexed.safe
+      ? redactNumbers(fingerprintTokens(lexed.tokens))
+      : UNREDACTABLE;
+  }
+  const normalized = normalizedInput
     .toLowerCase()
     .replace(/\s+/g, ' ')
     .replace(/;\s*$/, '')
@@ -538,8 +710,15 @@ export function fingerprintStatement(sql: string): string {
  * unredactable statement collapses to a fixed placeholder rather than any of its
  * text.
  */
-export function previewStatement(sql: string): string {
-  const redacted = redactSqlLiterals(typeof sql === 'string' ? sql.trim() : sql);
+export function previewStatement(
+  sql: string,
+  dialect: RedactDialect = 'postgres',
+): string {
+  const redacted = redactSqlLiterals(
+    typeof sql === 'string' ? sql.trim() : sql,
+    {},
+    dialect,
+  );
   if (redacted === UNREDACTABLE) return UNREDACTABLE;
 
   let out = sliceCodeUnits(redacted, PREVIEW_MAX_LENGTH);
