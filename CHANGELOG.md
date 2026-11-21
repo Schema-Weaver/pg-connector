@@ -5,6 +5,26 @@ All notable changes to `@schema-weaver/pg-connector` are documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.5] - 2026-11-21
+
+### Added
+
+- **MySQL Data Explorer Support**: PostgreSQL and MySQL now share a capability-aware relay and grid experience, including introspection, filters, cursor pagination, table metadata, and CSV/XLSX export.
+- **`sw-connector` Binary**: `sw-connector` is the canonical command. Existing `db-connector`, `pg-connector`, `sw-agent`, and `schemaweaver` aliases remain available.
+- **Full-Screen Add Wizard**: Interactive terminals get a keyboard/mouse wizard covering engine, URL, authentication, TLS, permissions, alias, and project. Piped input and `SW_AGENT_NO_TUI=1` keep the compact prompt flow.
+
+### Changed
+
+- **Engine-Aware Wake Metadata**: The relay receives `db_type` with every database alias, preventing PostgreSQL SQL from being routed to MySQL or MongoDB connections.
+- **Relay URL Safety**: Plaintext `ws://`/`http://` relay URLs are accepted only for loopback hosts; remote relays require TLS.
+
+### Fixed
+
+- **REPL Quoted Queries**: A single matching outer quote pair is removed from pasted SQL without changing quotes inside the statement.
+- **Test Guard**: Nested test files are detected correctly instead of allowing a false empty-suite pass.
+
+> MongoDB driver support exists in the connector but remains experimental. The document-shaped Data Explorer UI is planned for a future release.
+
 ## [2.0.4] - 2026-11-10
 
 ### Fixed
@@ -47,6 +67,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CLI Suite**: Full command-line interface (`pg-connector` / `sw-agent` / `schemaweaver`) with interactive REPL, database management (`db add`, `db list`, `db test`, `db query`, `db connect`), daemon lifecycle (`start`, `stop`, `status`), and diagnostic tools (`doctor`, `debug`).
 - **Programmatic SDK**: Fully typed Node.js/TypeScript exports for `PoolManager`, `QueryRunner`, `MigrationRunner`, `AgentSession`, and `Dispatcher`.
 
+[2.0.5]: https://github.com/Schema-Weaver/pg-connector/compare/v2.0.4...v2.0.5
+[2.0.4]: https://github.com/Schema-Weaver/pg-connector/compare/v2.0.3...v2.0.4
+[2.0.3]: https://github.com/Schema-Weaver/pg-connector/compare/v2.0.2...v2.0.3
 [2.0.2]: https://github.com/Schema-Weaver/pg-connector/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/Schema-Weaver/pg-connector/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/Schema-Weaver/pg-connector/releases/tag/v2.0.0
