@@ -7,6 +7,8 @@ import * as path from 'path';
 import { AUDIT_DIR_MODE, ensureAuditDir, probeAuditDir } from '../../audit/files';
 import { verifyAuditDirCached, type CachedVerifyResult } from '../../audit/verify-cache';
 import { buildSslConfig } from '../../execution/pool';
+import { dbTypeOf } from '../../drivers/config-shape';
+import { createDriverForEntry } from '../../drivers/factory';
 import { RECOMMENDED_PG_ROLE } from '../../permissions/role-policy';
 
 export interface DoctorCheck {
@@ -133,6 +135,31 @@ export async function checkDatabasesReachable(ctx: DoctorContext): Promise<Docto
         db.password_stored || (db.password_env ? process.env[db.password_env] : undefined);
       if (!password) {
         results.push({ alias: db.db_alias, ok: false, detail: 'No password configured' });
+        continue;
+      }
+
+      if (dbTypeOf(db) !== 'postgres') {
+        const driver = createDriverForEntry(db);
+        if (!driver) {
+          results.push({
+            alias: db.db_alias,
+            ok: false,
+            detail: `No driver is available for '${dbTypeOf(db)}'`,
+          });
+          continue;
+        }
+        try {
+          const info = await driver.testConnection(db);
+          results.push({
+            alias: db.db_alias,
+            ok: true,
+            detail: `Connected (${info.version})`,
+          });
+        } catch (err: unknown) {
+          results.push({ alias: db.db_alias, ok: false, detail: errorText(err) });
+        } finally {
+          await driver.closeAll().catch(() => undefined);
+        }
         continue;
       }
 
@@ -264,7 +291,7 @@ export async function checkConfigFilePermissions(ctx: DoctorContext): Promise<Do
     return {
       name,
       status: 'fail',
-      detail: `${problems.join('; ')}. Other local users can read credential material. Run 'sw-agent doctor --fix'.`,
+      detail: `${problems.join('; ')}. Other local users can read credential material. Run 'sw-connector doctor --fix'.`,
     };
   }
 
@@ -626,6 +653,10 @@ export async function checkPgRoleLeastPrivilege(ctx: DoctorContext): Promise<Doc
 
   for (const db of ctx.databasesConfig.databases) {
     const alias = db.db_alias;
+    if (dbTypeOf(db) !== 'postgres') {
+      unchecked.push(`${alias} (role check N/A for ${dbTypeOf(db)})`);
+      continue;
+    }
     const password =
       db.password_stored || (db.password_env ? process.env[db.password_env] : undefined);
     if (!password) {
@@ -677,7 +708,7 @@ export async function checkPgRoleLeastPrivilege(ctx: DoctorContext): Promise<Doc
     return {
       name,
       status: 'warn',
-      detail: `Skipped: no database could be reached to inspect the role (${unchecked.join(', ') || 'no candidates'})`,
+      detail: `Skipped: no PostgreSQL database could be reached to inspect the role (${unchecked.join(', ') || 'no candidates'})`,
     };
   }
   const suffix = unchecked.length > 0 ? ` Not checked: ${unchecked.join(', ')}.` : '';

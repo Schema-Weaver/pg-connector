@@ -1,4 +1,5 @@
 import { DEFAULTS } from '../protocol/constants';
+import { isLoopbackHost } from '../config/schema';
 
 /**
  * Exponential backoff calculator.
@@ -64,6 +65,29 @@ export function withJitter(delayMs: number, jitterPct: number = 0.2): number {
 /** URL schemes that mean "TLS-protected". Nothing else may carry the token. */
 export const SECURE_TRANSPORT_SCHEMES: readonly string[] = Object.freeze(['wss:', 'https:']);
 
+/** Cleartext schemes that are acceptable only on a loopback host. */
+const LOOPBACK_PLAINTEXT_SCHEMES: readonly string[] = Object.freeze(['ws:', 'http:']);
+
+/** Warn once per target; a reconnecting wake channel must not spam the log. */
+const warnedLoopbackTargets = new Set<string>();
+
+function isLoopbackPlaintext(parsed: URL): boolean {
+  return (
+    LOOPBACK_PLAINTEXT_SCHEMES.includes(parsed.protocol) && isLoopbackHost(parsed.hostname)
+  );
+}
+
+function warnLoopbackOnce(parsed: URL, context: string): void {
+  const target = `${parsed.protocol}//${parsed.host}`;
+  if (warnedLoopbackTargets.has(target)) return;
+  warnedLoopbackTargets.add(target);
+  console.warn(
+    `[LOCAL PLAINTEXT] ${context} is using ${target}. ` +
+      'The host is loopback, so the agent token stays on this machine. ' +
+      'Use wss:// for any relay reachable over a network.',
+  );
+}
+
 /**
  * Operator-facing remediation for a rejected or expired agent token.
  *
@@ -76,21 +100,18 @@ export const TOKEN_ROTATION_HINT =
   'the running agent picks it up.';
 
 /**
- * Remediation for a cleartext transport target.
+ * Remediation for a rejected cleartext transport target.
  *
- * Names the sanctioned lab escape hatch (`--insecure-transport`, audit H-03) with
- * its costs attached. The config validators reject plaintext URLs outright, so
- * the flag is the only route to a cleartext socket — withholding it would leave
- * the operator with a refusal they cannot act on and a plaintext mode they cannot
- * discover. The secure remedy still comes first and the flag is stated as a last
- * resort that keeps the token in cleartext for the whole session.
+ * Plaintext is accepted only for loopback literals, where the token never
+ * leaves the machine. A non-loopback target needs TLS; the remaining
+ * `allowInsecure` option is a programmatic escape hatch for embedders and is
+ * deliberately not exposed as a CLI flag.
  */
 export const INSECURE_TRANSPORT_HINT =
   'Set `cloud_url` (and `cloud_telemetry.ingest_url`, if set) to a wss:// or https:// URL: plaintext ' +
-  'targets are refused because the agent token would be readable in transit. For local lab use, put ' +
-  'a TLS terminator in front of the relay; if that is genuinely impossible, start the agent with ' +
-  '--insecure-transport, which is never written to config, logs a loud warning on every start, and ' +
-  'leaves the agent token in cleartext for the lifetime of the session.';
+  'targets are refused because the agent token would be readable in transit. Plaintext is accepted ' +
+  'only for a loopback host (localhost, 127.0.0.0/8, or ::1). For a remote lab relay, put a TLS ' +
+  'terminator in front of it.';
 
 /** Marker so operators can grep logs for this condition. */
 export const INSECURE_TRANSPORT_MARKER = '[INSECURE TRANSPORT]';
@@ -170,8 +191,11 @@ export function isSecureTransportUrl(url: string | URL): boolean {
  * This is the single enforcement point for audit H-03: every outbound
  * connection path calls it (directly or via {@link toWebSocketUrl} /
  * {@link toHttpUrl}) before an `Authorization: Bearer <agent token>` header is
- * attached. Non-TLS schemes throw instead of being downgraded. Only an
- * explicit, non-persisted `allowInsecure` opt-in permits plaintext, and it
+ * attached. Non-TLS schemes throw instead of being downgraded, with one
+ * deliberate exception: a `ws:`/`http:` URL whose host is a loopback literal
+ * is accepted, because the traffic never leaves the machine. That exception is
+ * what lets a developer point the agent at `ws://localhost:3000`. An explicit
+ * `allowInsecure` opt-in is still available for non-loopback lab setups and
  * warns loudly on every call.
  */
 export function assertSecureTransport(url: string | URL, opts: TransportGuardOptions = {}): URL {
@@ -179,6 +203,11 @@ export function assertSecureTransport(url: string | URL, opts: TransportGuardOpt
   const parsed = parseTarget(url, context);
 
   if (SECURE_TRANSPORT_SCHEMES.includes(parsed.protocol)) {
+    return parsed;
+  }
+
+  if (isLoopbackPlaintext(parsed)) {
+    warnLoopbackOnce(parsed, context);
     return parsed;
   }
 
@@ -197,7 +226,7 @@ function insecureTransportError(parsed: URL, context: string): TransportSecurity
   return new TransportSecurityError(
     'insecure_transport',
     `Refusing to open ${context} to ${parsed.protocol}//${parsed.host}: the agent token is a ` +
-      `bearer credential and is only ever sent over TLS. ${INSECURE_TRANSPORT_HINT}`,
+      `bearer credential and is sent over TLS, or over a loopback socket only. ${INSECURE_TRANSPORT_HINT}`,
     `${parsed.protocol}//${parsed.host}`,
     parsed.protocol,
     context,
@@ -207,8 +236,9 @@ function insecureTransportError(parsed: URL, context: string): TransportSecurity
 /**
  * Build a `wss:` target from a configured cloud URL.
  *
- * `https:` maps to `wss:` (same TLS transport, different protocol) and `wss:`
- * is used as-is. `ws:`/`http:` throw unless the caller passed `allowInsecure`.
+ * `https:` maps to `wss:` and `http:` maps to `ws:` (both are the same
+ * transport with a different protocol). `ws:` is used as-is. Plaintext is
+ * accepted only for a loopback host or an explicit `allowInsecure` opt-in.
  */
 export function toWebSocketUrl(base: string | URL, opts: TransportGuardOptions = {}): URL {
   const context = describeContext(opts.context);
@@ -216,6 +246,8 @@ export function toWebSocketUrl(base: string | URL, opts: TransportGuardOptions =
 
   if (parsed.protocol === 'https:') {
     parsed.protocol = 'wss:';
+  } else if (parsed.protocol === 'http:') {
+    parsed.protocol = 'ws:';
   }
   return parsed;
 }
@@ -223,8 +255,9 @@ export function toWebSocketUrl(base: string | URL, opts: TransportGuardOptions =
 /**
  * Build an `https:` target from a configured cloud URL.
  *
- * `wss:` maps to `https:` (same TLS transport, SSE/plain HTTP) and `https:` is
- * used as-is. `ws:`/`http:` throw unless the caller passed `allowInsecure`.
+ * `wss:` maps to `https:` and `ws:` maps to `http:` (the same transport with a
+ * different protocol). Plaintext is accepted only for a loopback host or an
+ * explicit `allowInsecure` opt-in.
  */
 export function toHttpUrl(base: string | URL, opts: TransportGuardOptions = {}): URL {
   const context = describeContext(opts.context);
@@ -232,7 +265,7 @@ export function toHttpUrl(base: string | URL, opts: TransportGuardOptions = {}):
 
   if (parsed.protocol === 'wss:') {
     parsed.protocol = 'https:';
-  } else if (opts.allowInsecure === true && parsed.protocol === 'ws:') {
+  } else if (parsed.protocol === 'ws:') {
     parsed.protocol = 'http:';
   }
   return parsed;

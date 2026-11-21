@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as readline from 'readline';
-import { select } from '@inquirer/prompts';
+import { runChoiceDialog } from './tui/dialogs';
 import { C } from './ui/colors';
 
 let rl: readline.Interface | null = null;
@@ -19,8 +19,83 @@ export function isReplMode(): boolean {
   return replMode;
 }
 
+/**
+ * Suspends the REPL's own key handling while a command is prompting. The REPL
+ * already gates on `isExecuting`; this is the explicit second gate that makes
+ * nested prompts own the keyboard, including raw mode, without ambiguity.
+ */
+let replInputActive = true;
+
+export function setReplInputActive(active: boolean): void {
+  replInputActive = active;
+}
+
+export function isReplInputActive(): boolean {
+  return replInputActive;
+}
+
 export function getReplInterface(): readline.Interface | null {
   return rl;
+}
+
+interface NonTtyLineResult {
+  /** `null` only after stdin has closed with no answer available. */
+  line: string | null;
+  eof: boolean;
+}
+
+interface NonTtyLineSource {
+  reader: readline.Interface;
+  queue: NonTtyLineResult[];
+  waiters: Array<(result: NonTtyLineResult) => void>;
+  closed: boolean;
+}
+
+let nonTtySource: NonTtyLineSource | null = null;
+
+function usingPipedInput(): boolean {
+  return !process.stdin.isTTY || !process.stdout.isTTY;
+}
+
+/**
+ * Piped input delivers every answer in the first data chunk. Creating a fresh
+ * readline interface per question discards the answers that arrived before that
+ * interface existed, so keep one buffered line source for the whole command.
+ */
+function ensureNonTtyLineSource(): NonTtyLineSource {
+  if (nonTtySource) return nonTtySource;
+
+  const source: NonTtyLineSource = {
+    reader: readline.createInterface({ input: process.stdin, terminal: false }),
+    queue: [],
+    waiters: [],
+    closed: false,
+  };
+
+  source.reader.on('line', (line) => {
+    const result: NonTtyLineResult = { line, eof: false };
+    const waiter = source.waiters.shift();
+    if (waiter) waiter(result);
+    else source.queue.push(result);
+  });
+
+  source.reader.on('close', () => {
+    source.closed = true;
+    while (source.waiters.length > 0) {
+      source.waiters.shift()?.({ line: null, eof: true });
+    }
+  });
+
+  nonTtySource = source;
+  return source;
+}
+
+function readNonTtyLine(): Promise<NonTtyLineResult> {
+  const source = ensureNonTtyLineSource();
+  const queued = source.queue.shift();
+  if (queued) return Promise.resolve(queued);
+  if (source.closed) return Promise.resolve({ line: null, eof: true });
+  return new Promise((resolve) => source.waiters.push(resolve));
 }
 
 export interface PromptOverrides {
@@ -39,10 +114,23 @@ export function ask(question: string, defaultValue?: string): Promise<string> {
   if (promptOverrides?.ask) {
     return promptOverrides.ask(question, defaultValue);
   }
-  return new Promise((resolve) => {
-    const displayDefault = defaultValue !== undefined ? C.dim(` [${defaultValue}]`) : '';
-    const promptText = `${C.brand('?')} ${C.white(question)}${displayDefault} `;
 
+  const displayDefault = defaultValue !== undefined ? C.dim(` [${defaultValue}]`) : '';
+  const promptText = `${C.brand('?')} ${C.white(question)}${displayDefault} `;
+
+  if (usingPipedInput()) {
+    process.stdout.write(promptText);
+    return readNonTtyLine().then(({ line, eof }) => {
+      if (eof || line === null) {
+        if (defaultValue !== undefined) return defaultValue;
+        throw new Error(`Input stream closed before answer to: ${question}`);
+      }
+      const trimmed = line.trim();
+      return trimmed === '' && defaultValue !== undefined ? defaultValue : trimmed;
+    });
+  }
+
+  return new Promise((resolve) => {
     if (rl) {
       rl.pause();
       const tempRl = readline.createInterface({
@@ -84,10 +172,17 @@ export function ask(question: string, defaultValue?: string): Promise<string> {
   });
 }
 
-export function askSecret(question: string): Promise<string> {
-  return new Promise((resolve) => {
-    const promptText = `${C.brand('?')} ${C.white(question)} `;
+export async function askSecret(question: string): Promise<string> {
+  const promptText = `${C.brand('?')} ${C.white(question)} `;
 
+  if (usingPipedInput()) {
+    process.stdout.write(promptText);
+    const { line } = await readNonTtyLine();
+    process.stdout.write('\n');
+    return (line ?? '').trim();
+  }
+
+  return new Promise((resolve) => {
     if (rl) {
       rl.pause();
     }
@@ -160,6 +255,19 @@ export function askSecret(question: string): Promise<string> {
   });
 }
 
+/**
+ * Ask the operator to pick one of `choices`.
+ *
+ * In a TTY this opens a small full-screen selector with arrow-key, number-key
+ * and mouse support. It deliberately has no third-party prompt dependency:
+ * `@inquirer/prompts` queries the cursor position and erases previously drawn
+ * lines, which leaves options invisible in wrapped/captured terminals and in
+ * some PTYs. The full-screen renderer writes absolute positions and restores
+ * the previous screen on exit.
+ *
+ * When stdin/stdout are not a TTY (pipes, CI, captured logs), arrow keys and raw
+ * mode are unavailable, so the same choices are answered with a plain number.
+ */
 export async function askChoice(
   question: string,
   choices: string[],
@@ -168,20 +276,149 @@ export async function askChoice(
   if (promptOverrides?.askChoice) {
     return promptOverrides.askChoice(question, choices, defaultValue);
   }
-  if (rl) {
-    rl.pause();
+  if (choices.length === 0) {
+    throw new Error(`askChoice called without choices: ${question}`);
   }
 
-  try {
-    const result = await select({
-      message: question,
-      choices: choices.map((c) => ({ name: c, value: c })),
-      default: defaultValue,
-    });
-    return result;
-  } finally {
-    rl?.resume();
+  // In a real terminal, use the full-screen selector so arrows, number keys and
+  // mouse clicks all work. Pipes and older terminals keep the compact numbered
+  // prompt below.
+  const tuiChoice = await runChoiceDialog(question, choices, defaultValue);
+  if (tuiChoice.status === 'selected') {
+    console.log(`  ${C.green('✓')} ${C.white(question)}: ${C.brightCyan(tuiChoice.value)}`);
+    return tuiChoice.value;
   }
+
+  const defaultIndex = defaultValue ? choices.indexOf(defaultValue) : -1;
+
+  if (!isInteractive()) {
+    console.log(`  ${C.brand('?')} ${C.white(question)}`);
+    for (let i = 0; i < choices.length; i += 1) {
+      const marker = choices[i] === defaultValue ? C.dim(' (default)') : '';
+      console.log(`    ${C.cyan(String(i + 1))}) ${C.white(choices[i])}${marker}`);
+    }
+    const promptSuffix = defaultIndex >= 0 ? String(defaultIndex + 1) : undefined;
+
+    for (;;) {
+      const answer = (await ask(`Choose 1-${choices.length}`, promptSuffix)).trim();
+      if (answer === '' && defaultIndex >= 0) {
+        return defaultValue as string;
+      }
+      const exact = choices.findIndex((choice) => choice === answer);
+      if (exact >= 0) {
+        return choices[exact];
+      }
+      const index = Number(answer);
+      if (Number.isInteger(index) && index >= 1 && index <= choices.length) {
+        return choices[index - 1];
+      }
+      console.log(C.yellow(`  Please enter a number from 1 to ${choices.length}.`));
+    }
+  }
+
+  return new Promise<string>((resolve) => {
+    let selected = defaultIndex >= 0 ? defaultIndex : 0;
+    let digits = '';
+    const stdin = process.stdin;
+    const stdout = process.stdout;
+    const clearLine = () => `\r${' '.repeat(stdout.columns || 80)}\r`;
+    const hint = C.dim(
+      `  (up/down to move, 1-${choices.length} then Enter to jump, Enter to select)`,
+    );
+
+    const draw = () => {
+      const marker = choices[selected] === defaultValue ? C.dim(' (default)') : '';
+      const typed = digits ? C.yellow(` [${digits}]`) : '';
+      stdout.write(`${clearLine()}  ${C.cyan('>')} ${C.white(choices[selected])}${typed}${marker}${hint}`);
+    };
+
+    const cleanup = () => {
+      stdin.removeListener('data', onData);
+      if (stdin.isTTY) {
+        try {
+          stdin.setRawMode(false);
+        } catch {
+          // ignore
+        }
+      }
+      rl?.resume();
+    };
+
+    const finish = (value: string) => {
+      cleanup();
+      stdout.write(`${clearLine()}  ${C.green('✓')} ${C.white(question)}: ${C.brightCyan(value)}\n`);
+      resolve(value);
+    };
+
+    const applyDigits = () => {
+      if (!digits) return;
+      const index = Number(digits);
+      if (Number.isInteger(index) && index >= 1 && index <= choices.length) {
+        selected = index - 1;
+      }
+    };
+
+    let escaping = false;
+    function onData(chunk: Buffer) {
+      for (const ch of chunk.toString('utf8')) {
+        if (escaping) {
+          // Consume the '[' or 'O' of an escape sequence and act on its final
+          // byte. No cursor queries: only the two arrow keys are interpreted.
+          if (ch === '[' || ch === 'O') continue;
+          escaping = false;
+          if (ch === 'A') {
+            digits = '';
+            selected = (selected - 1 + choices.length) % choices.length;
+            draw();
+          } else if (ch === 'B') {
+            digits = '';
+            selected = (selected + 1) % choices.length;
+            draw();
+          }
+          continue;
+        }
+
+        if (ch === '\x1b') {
+          escaping = true;
+          continue;
+        }
+        if (ch === '\r' || ch === '\n') {
+          finish(choices[selected]);
+          return;
+        }
+        if (ch === '\x03') {
+          cleanup();
+          stdout.write('\n');
+          process.exit(130);
+          return;
+        }
+        if (ch >= '0' && ch <= '9') {
+          digits += ch;
+          applyDigits();
+          draw();
+        }
+      }
+    }
+
+    console.log(`  ${C.brand('?')} ${C.white(question)}`);
+    for (let i = 0; i < choices.length; i += 1) {
+      const marker = choices[i] === defaultValue ? C.dim(' (default)') : '';
+      console.log(`    ${C.cyan(String(i + 1))}) ${C.white(choices[i])}${marker}`);
+    }
+    console.log();
+
+    rl?.pause();
+    if (stdin.isTTY) {
+      try {
+        stdin.setRawMode(true);
+      } catch {
+        // A non-raw TTY still works with Enter; arrows may not.
+      }
+    }
+    stdin.resume();
+    stdin.on('data', onData);
+    draw();
+  });
 }
 
 export async function askConfirm(question: string, defaultValue: boolean): Promise<boolean> {
@@ -206,7 +443,9 @@ export async function askConfirm(question: string, defaultValue: boolean): Promi
 }
 
 export function closePrompts(): void {
-  // No-op - readline interfaces are managed per-call
+  const source = nonTtySource;
+  nonTtySource = null;
+  source?.reader.close();
 }
 
 /**

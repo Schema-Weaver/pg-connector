@@ -31,6 +31,8 @@ import {
   DB_TYPES,
   defaultPortFor,
   isDbType,
+  maxDatabaseNameLength,
+  maxUserNameLength,
   MONGODB_READ_CONCERNS,
   MONGODB_READ_PREFERENCES,
   type DbType,
@@ -38,6 +40,7 @@ import {
   type MongoReadPreference,
 } from '../../drivers/config-shape';
 import { createDriverForEntry } from '../../drivers/factory';
+import { runAddDatabaseWizard, type AddDatabaseDraft } from '../tui/add-wizard';
 
 function exit_(code: number): never {
   closePrompts();
@@ -68,7 +71,7 @@ function hasAnyFlag(args: string[], ...names: string[]): boolean {
  * `/proc/<pid>/environ` is mode 0400 and owned by the process's own user, so
  * unlike argv it is NOT readable by another local UID, and the value never
  * enters `ps` output, the shell history or a CI command echo. `SW_AGENT_DB_PASSWORD=x
- * sw-agent db add …` is therefore a genuine secret channel, and the only one
+ * sw-connector db add …` is therefore a genuine secret channel, and the only one
  * that needs no file and no TTY.
  *
  * Checked before the interactive prompt so a scripted `db add` is unattended,
@@ -192,15 +195,299 @@ function defaultUserFor(type: DbType): string {
   }
 }
 
+/** Infer the engine from a URL scheme when no explicit --type was supplied. */
+function inferDbTypeFromUrl(raw: string | undefined): DbType | undefined {
+  if (!raw) return undefined;
+  try {
+    const { protocol } = new URL(raw);
+    if (protocol === 'postgres:' || protocol === 'postgresql:') return 'postgres';
+    if (protocol === 'mysql:') return 'mysql';
+    if (protocol === 'mongodb:' || protocol === 'mongodb+srv:') return 'mongodb';
+  } catch {
+    // The canonical URL parse below reports this with redacted context.
+  }
+  return undefined;
+}
+
+interface DbAddDetails {
+  dbAlias: string;
+  projectName: string;
+  dbType: DbType;
+  host: string;
+  srv: boolean;
+  portVal: number;
+  database: string;
+  user: string;
+  passwordEnv?: string;
+  passwordStored?: string;
+  sslMode: DbEntry['ssl_mode'];
+  sslRootCert: string | null;
+  authSource: string | null;
+  readPreference: MongoReadPreference | null;
+  readConcern: MongoReadConcern | null;
+  finalPerm: PermissionLevel | null;
+}
+
+/** Convert a completed wizard draft into the same shape as the line prompts. */
+function detailsFromDraft(draft: AddDatabaseDraft): DbAddDetails {
+  return {
+    dbAlias: draft.alias,
+    projectName: draft.projectName || draft.alias,
+    dbType: draft.dbType,
+    host: draft.host,
+    srv: draft.srv,
+    portVal: draft.port,
+    database: draft.database,
+    user: draft.user,
+    passwordEnv: draft.passwordEnv,
+    passwordStored: draft.passwordStored,
+    sslMode: draft.sslMode,
+    sslRootCert: draft.sslRootCert,
+    authSource: draft.authSource,
+    readPreference: draft.readPreference,
+    readConcern: draft.readConcern,
+    finalPerm: draft.permission,
+  };
+}
+
+/**
+ * The original line-by-line flow. It remains the fallback for piped input,
+ * scripted PTYs without mouse support, and environments where the full-screen
+ * terminal UI cannot be used.
+ */
+async function collectLineInteractiveDetails(): Promise<DbAddDetails> {
+  console.log();
+  console.log(C.bold(C.brand('  Add a Database')));
+  console.log(separator('', 50));
+  console.log();
+
+  let dbAlias = '';
+  for (;;) {
+    dbAlias = await ask('Database alias');
+    if (dbAlias.trim() === '') continue;
+    if (!isValidIdentifier(dbAlias, 64) || dbAlias.includes(' ')) {
+      console.log(`  ${C.red(S.cross)} Use letters, numbers, hyphens, underscores only.`);
+      continue;
+    }
+
+    const existing = findDbEntry(dbAlias);
+    if (existing) {
+      console.log();
+      console.log(
+        `  ${C.yellow(S.warning)} Database alias "${C.white(dbAlias)}" already exists:`,
+      );
+      console.log(
+        `    ${C.cyan(existing.db_alias)}  ${C.dim(`${existing.host}:${existing.port}/${existing.database}`)}`,
+      );
+      console.log();
+
+      const choice = await askChoice(
+        'What would you like to do?',
+        ['Use a different alias', 'Remove existing and re-add', 'Cancel'],
+        'Use a different alias',
+      );
+
+      if (choice === 'Cancel') {
+        console.log(`  ${C.dim('Aborted.')}`);
+        exit_(0);
+      }
+      if (choice === 'Remove existing and re-add') {
+        const confirm = await askConfirm(
+          C.red(`Remove "${existing.db_alias}" and add a new entry?`),
+          false,
+        );
+        if (!confirm) {
+          console.log(`  ${C.dim('Aborted.')}`);
+          exit_(0);
+        }
+        removeDbEntry(existing.db_alias);
+        console.log(`  ${check(`Removed existing entry ${C.cyan(existing.db_alias)}.`)}`);
+        console.log();
+        break;
+      }
+      continue;
+    }
+    break;
+  }
+
+  const projectName = dbAlias;
+  console.log(`  ${check(`Alias: ${C.white(dbAlias)}`)}`);
+  console.log();
+
+  const engineChoice = await askChoice(
+    'Database engine',
+    ['PostgreSQL', 'MySQL', 'MongoDB'],
+    'PostgreSQL',
+  );
+  const dbType: DbType =
+    engineChoice === 'MySQL' ? 'mysql' : engineChoice === 'MongoDB' ? 'mongodb' : 'postgres';
+  console.log(`  ${check(`Engine: ${C.magenta(dbType)}`)}`);
+  console.log();
+
+  let host = '';
+  for (;;) {
+    host = await ask('Host', 'localhost');
+    if (host.trim() === '') continue;
+    if (isValidHostname(host) || isValidIpv4(host) || isValidIpv6(host)) {
+      break;
+    }
+    console.log(`  ${C.red(S.cross)} Invalid hostname or IP.`);
+  }
+  console.log(`  ${check(`Host: ${C.white(host)}`)}`);
+  console.log();
+
+  let srv = false;
+  if (dbType === 'mongodb') {
+    srv = await askConfirm('Use a DNS seed list (mongodb+srv://)?', false);
+    console.log(
+      `  ${check(`SRV: ${C.white(srv ? 'enabled' : 'disabled')}${srv ? C.dim(' (port is ignored; DNS records carry the hosts)') : ''}`)}`,
+    );
+    console.log();
+  }
+
+  let portVal = defaultPortFor(dbType);
+  if (!srv) {
+    for (;;) {
+      const portStr = await ask('Port', String(defaultPortFor(dbType)));
+      const port = parseInt(portStr, 10);
+      if (!isNaN(port) && port >= 1 && port <= 65535) {
+        portVal = port;
+        break;
+      }
+      console.log(`  ${C.red(S.cross)} Port must be 1-65535.`);
+    }
+  }
+  console.log(`  ${check(`Port: ${C.white(String(portVal))}${srv ? C.dim(' (ignored for SRV)') : ''}`)}`);
+  console.log();
+
+  const maxDatabaseLength = maxDatabaseNameLength(dbType);
+  const maxUserLength = maxUserNameLength(dbType);
+
+  let database = '';
+  for (;;) {
+    database = await ask('Database name');
+    if (database.trim() === '') continue;
+    if (database.length <= maxDatabaseLength) {
+      break;
+    }
+    console.log(`  ${C.red(S.cross)} Database name too long (max ${maxDatabaseLength}).`);
+  }
+  console.log(`  ${check(`Database: ${C.white(database)}`)}`);
+  console.log();
+
+  let user = '';
+  for (;;) {
+    user = await ask('Username', defaultUserFor(dbType));
+    if (user.trim() === '') continue;
+    if (user.length <= maxUserLength) {
+      break;
+    }
+    console.log(`  ${C.red(S.cross)} Username too long (max ${maxUserLength}).`);
+  }
+  console.log(`  ${check(`User: ${C.white(user)}`)}`);
+  console.log();
+
+  const passwordChoice = await askChoice(
+    'Password storage',
+    ['Environment variable', 'Store directly (encrypted on this machine)'],
+    'Environment variable',
+  );
+
+  let passwordEnv: string | undefined;
+  let passwordStored: string | undefined;
+
+  if (passwordChoice === 'Environment variable') {
+    const envVar = await ask('Environment variable name', 'DB_PASSWORD');
+    if (envVar && isValidEnvVarName(envVar)) {
+      passwordEnv = envVar;
+    } else {
+      console.log(`  ${C.yellow(S.warning)} Invalid env var name. Using stored password instead.`);
+      passwordStored = await askSecret('Password');
+    }
+  } else {
+    passwordStored = await askSecret('Password');
+  }
+
+  const sslMode = (await askChoice(
+    'SSL mode',
+    ['disable', 'require', 'verify-ca', 'verify-full'],
+    'require',
+  )) as DbEntry['ssl_mode'];
+
+  let sslRootCert: string | null = null;
+  if (sslMode !== 'disable') {
+    for (;;) {
+      const certPath = await ask('SSL root cert path', '');
+      if (certPath.trim() === '') {
+        sslRootCert = null;
+        break;
+      }
+      if (fs.existsSync(certPath)) {
+        sslRootCert = certPath;
+        break;
+      }
+      console.log(`  ${C.red(S.cross)} Cert file not found.`);
+    }
+  }
+
+  let authSource: string | null = null;
+  let readPreference: MongoReadPreference | null = null;
+  let readConcern: MongoReadConcern | null = null;
+  if (dbType === 'mongodb') {
+    authSource = (await ask('Auth source database', database)) || database;
+    readPreference = (await askChoice(
+      'Read preference',
+      [...MONGODB_READ_PREFERENCES],
+      'primary',
+    )) as MongoReadPreference;
+    readConcern = (await askChoice(
+      'Read concern',
+      [...MONGODB_READ_CONCERNS],
+      'local',
+    )) as MongoReadConcern;
+  }
+
+  const permOverride = await askChoice(
+    'Permission',
+    ['read_only', 'auto_upgrade', 'manual', 'full', 'use default'],
+    'use default',
+  );
+  const finalPerm = permOverride === 'use default' ? null : (permOverride as PermissionLevel);
+
+  return {
+    dbAlias,
+    projectName,
+    dbType,
+    host,
+    srv,
+    portVal,
+    database,
+    user,
+    passwordEnv,
+    passwordStored,
+    sslMode,
+    sslRootCert,
+    authSource,
+    readPreference,
+    readConcern,
+    finalPerm,
+  };
+}
+
 export async function runDbAdd(args: string[] = []): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log();
     console.log(`  ${C.bold('Add a Database')}`);
     console.log();
+    console.log(`  ${C.bold('Engines:')} ${C.cyan('postgres')} (default), ${C.cyan('mysql')}, ${C.cyan('mongodb')} — select with --type or the interactive prompt.`);
+    console.log();
     console.log(`  ${C.bold('Interactive Mode:')}`);
     console.log(`    ${C.cyan('db add')}`);
     console.log(
-      `    ${C.dim('Password is asked for with a masked prompt; it never touches argv.')}`,
+      `    ${C.dim('Full-screen wizard: engine → connection → credentials → alias → review. Project defaults to alias.')}`,
+    );
+    console.log(
+      `    ${C.dim('Arrows, number keys and mouse work; SW_AGENT_NO_TUI=1 keeps the line prompts.')}`,
     );
     console.log();
     console.log(`  ${C.bold('Non-Interactive via URL:')}`);
@@ -208,8 +495,13 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
       `    ${C.cyan('db add --url-file <path> [--url-stdin] [--alias <alias>] [--project <proj>]')}`,
     );
     console.log(`    ${C.cyan('db add --url postgresql://user@host:5432/dbname')}`);
+    console.log(`    ${C.cyan('db add --url mysql://user@host:3306/dbname')}`);
+    console.log(`    ${C.cyan('db add --url mongodb://user@host:27017/dbname')}`);
     console.log(
-      `    ${C.dim('(a --url carrying a password is refused: it would put it in process.argv)')}`,
+      `    ${C.dim('URL schemes are inferred unless --type is supplied; a --url carrying a password is refused.')}`,
+    );
+    console.log(
+      `    ${C.dim('Passwords in argv are refused because /proc/<pid>/cmdline is readable by every local user.')}`,
     );
     console.log();
     console.log(`  ${C.bold('Non-Interactive via Flags:')}`);
@@ -219,7 +511,9 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
     console.log(
       `    ${C.cyan('       [--password-file <path> | --password-stdin | --env <var>] [--ssl <mode>] [--cert <path>]')}`,
     );
-    console.log(`    ${C.cyan('       [--permission <level>] [--type postgres|mysql|mongodb] [--no-test]')}`);
+    console.log(
+      `    ${C.cyan('       [--permission <level>] [--type postgres|mysql|mongodb] [--no-test|--skip-test]')}`,
+    );
     console.log();
     console.log(`  ${C.bold('MongoDB-only flags:')}`);
     console.log(
@@ -278,7 +572,21 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
 
   const hasUrlArg = args.some((a) => a === '--url' || a === '--url-file' || a === '--url-stdin');
   const hasNonInteractiveArgs = Boolean(
-    hasUrlArg || flagHost || flagDatabase || (flagAlias && flagProject),
+    hasUrlArg ||
+      flagType ||
+      flagHost ||
+      flagPort ||
+      flagDatabase ||
+      flagUser ||
+      flagEnv ||
+      flagSsl ||
+      flagCert ||
+      flagPerm ||
+      flagAuthSource ||
+      flagReadPref ||
+      flagReadConcern ||
+      flagSrv ||
+      (flagAlias && flagProject),
   );
 
   if (hasNonInteractiveArgs) {
@@ -327,12 +635,35 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
           stdinFlags: ['--url-stdin'],
         })
       ).value;
+    } catch (err) {
+      printSecretRefusal(err);
+      exit_(1);
+    }
 
+    if (!flagType && urlArg) {
+      const inferred = inferDbTypeFromUrl(urlArg);
+      if (inferred) {
+        dbType = inferred;
+        console.log(`  ${check(`Engine: ${C.magenta(dbType)} ${C.dim('(inferred from URL)')}`)}`);
+      }
+    }
+
+    if (!hasUrlArg && !flagHost && !flagDatabase) {
+      console.log(
+        `  ${C.red(S.cross)} Non-interactive database flags require --database and --host (or a --url).`,
+      );
+      console.log(
+        `  ${C.dim('Example:')} ${C.cyan(`db add --type ${dbType} --host localhost --database <name> ...`)}`,
+      );
+      exit_(1);
+    }
+
+    try {
       if (!passwordEnv) {
         // The environment is checked BEFORE the interactive prompt and before
-        // any file/stdin flag, so `SW_AGENT_DB_PASSWORD=x sw-agent db add …` is
-        // the unattended channel, and it is the one that cannot leak to another
-        // local UID through /proc/<pid>/cmdline.
+        // any file/stdin flag, so `SW_AGENT_DB_PASSWORD=x sw-connector db add …`
+        // is the unattended channel, and it is the one that cannot leak to
+        // another local UID through /proc/<pid>/cmdline.
         const fromEnv = hasAnyFlag(args, '--password-file', '--password-stdin')
           ? undefined
           : readDbPasswordFromEnv();
@@ -383,6 +714,9 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
         if (!expectedProtocols.includes(u.protocol)) {
           console.log(
             `  ${C.red(S.cross)} URL must begin with ${expectedProtocols.join(' or ')} for db_type '${dbType}'.`,
+          );
+          console.log(
+            `  ${C.dim('Use a postgres://, mysql:// or mongodb:// URL, or pass --type explicitly.')}`,
           );
           exit_(1);
         }
@@ -475,8 +809,8 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
       exit_(1);
     }
 
-    const maxDatabaseLength = dbType === 'mysql' ? 64 : 63;
-    const maxUserLength = dbType === 'postgres' ? 63 : 128;
+    const maxDatabaseLength = maxDatabaseNameLength(dbType);
+    const maxUserLength = maxUserNameLength(dbType);
 
     if (!database || database.length > maxDatabaseLength) {
       console.log(
@@ -575,9 +909,9 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
     console.log();
     console.log(`  ${check(`Database "${C.cyan(dbAlias)}" added successfully!`)}`);
     console.log();
-    console.log(`  ${C.bold('Configuration:')}`);
-    console.log(`    Alias:      ${C.white(dbAlias)}`);
+    console.log(`  ${C.bold('Summary:')}`);
     console.log(`    Project:    ${C.white(projectName)}`);
+    console.log(`    Alias:      ${C.white(dbAlias)}`);
     console.log(`    Engine:     ${C.magenta(dbType)}`);
     console.log(`    Host:       ${C.white(`${host}:${port}`)}`);
     console.log(`    Database:   ${C.white(database)}`);
@@ -587,200 +921,47 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
     // enum-like string chosen above, so there is no path here that can print
     // the secret itself.
     console.log(`    Password:   ${describePasswordSource(passwordEnv, passwordSource)}`);
+    console.log(
+      `    Permission: ${C.yellow(finalPerm ?? 'default (from machine config)')}`,
+    );
     console.log();
     exit_(0);
   }
 
   // Interactive flow
-  console.log();
-  console.log(C.bold(C.brand('  Add a Database')));
-  console.log(separator('', 50));
-  console.log();
+  let details: DbAddDetails;
+  const wizardResult = await runAddDatabaseWizard({
+    aliasExists: (alias) => Boolean(findDbEntry(alias)),
+  });
 
-  let dbAlias = '';
-  for (;;) {
-    dbAlias = await ask('Database alias');
-    if (dbAlias.trim() === '') continue;
-    if (!isValidIdentifier(dbAlias, 64) || dbAlias.includes(' ')) {
-      console.log(`  ${C.red(S.cross)} Use letters, numbers, hyphens, underscores only.`);
-      continue;
-    }
-
-    const existing = findDbEntry(dbAlias);
-    if (existing) {
-      console.log();
-      console.log(
-        `  ${C.yellow(S.warning)} Database alias "${C.white(dbAlias)}" already exists:`,
-      );
-      console.log(
-        `    ${C.cyan(existing.db_alias)}  ${C.dim(`${existing.host}:${existing.port}/${existing.database}`)}`,
-      );
-      console.log();
-
-      const choice = await askChoice(
-        'What would you like to do?',
-        ['Use a different alias', 'Remove existing and re-add', 'Cancel'],
-        'Use a different alias',
-      );
-
-      if (choice === 'Cancel') {
-        console.log(`  ${C.dim('Aborted.')}`);
-        exit_(0);
-      }
-      if (choice === 'Remove existing and re-add') {
-        const confirm = await askConfirm(
-          C.red(`Remove "${existing.db_alias}" and add a new entry?`),
-          false,
-        );
-        if (!confirm) {
-          console.log(`  ${C.dim('Aborted.')}`);
-          exit_(0);
-        }
-        removeDbEntry(existing.db_alias);
-        console.log(`  ${check(`Removed existing entry ${C.cyan(existing.db_alias)}.`)}`);
-        console.log();
-        break;
-      }
-      continue;
-    }
-    break;
-  }
-
-  const projectName = dbAlias;
-  console.log(`  ${check(`Alias: ${C.white(dbAlias)}`)}`);
-  console.log();
-
-  const engineChoice = await askChoice(
-    'Database engine',
-    ['PostgreSQL', 'MySQL', 'MongoDB'],
-    'PostgreSQL',
-  );
-  const dbType: DbType =
-    engineChoice === 'MySQL' ? 'mysql' : engineChoice === 'MongoDB' ? 'mongodb' : 'postgres';
-  console.log(`  ${check(`Engine: ${C.magenta(dbType)}`)}`);
-  console.log();
-
-  let host = '';
-  for (;;) {
-    host = await ask('Host', 'localhost');
-    if (host.trim() === '') continue;
-    if (isValidHostname(host) || isValidIpv4(host) || isValidIpv6(host)) {
-      break;
-    }
-    console.log(`  ${C.red(S.cross)} Invalid hostname or IP.`);
-  }
-  console.log(`  ${check(`Host: ${C.white(host)}`)}`);
-  console.log();
-
-  let portVal = defaultPortFor(dbType);
-  for (;;) {
-    const portStr = await ask('Port', String(defaultPortFor(dbType)));
-    const port = parseInt(portStr, 10);
-    if (!isNaN(port) && port >= 1 && port <= 65535) {
-      portVal = port;
-      break;
-    }
-    console.log(`  ${C.red(S.cross)} Port must be 1-65535.`);
-  }
-  console.log(`  ${check(`Port: ${C.white(String(portVal))}`)}`);
-  console.log();
-
-  const maxDatabaseLength = dbType === 'mysql' ? 64 : 63;
-  const maxUserLength = dbType === 'postgres' ? 63 : 128;
-
-  let database = '';
-  for (;;) {
-    database = await ask('Database name');
-    if (database.trim() === '') continue;
-    if (database.length <= maxDatabaseLength) {
-      break;
-    }
-    console.log(`  ${C.red(S.cross)} Database name too long (max ${maxDatabaseLength}).`);
-  }
-  console.log(`  ${check(`Database: ${C.white(database)}`)}`);
-  console.log();
-
-  let user = '';
-  for (;;) {
-    user = await ask('Username', defaultUserFor(dbType));
-    if (user.trim() === '') continue;
-    if (user.length <= maxUserLength) {
-      break;
-    }
-    console.log(`  ${C.red(S.cross)} Username too long (max ${maxUserLength}).`);
-  }
-  console.log(`  ${check(`User: ${C.white(user)}`)}`);
-  console.log();
-
-  // Password: prefer env var, allow stored as fallback
-  const passwordChoice = await askChoice(
-    'Password storage',
-    ['Environment variable', 'Store directly (encrypted on this machine)'],
-    'Environment variable',
-  );
-
-  let passwordEnv: string | undefined;
-  let passwordStored: string | undefined;
-
-  if (passwordChoice === 'Environment variable') {
-    const envVar = await ask('Environment variable name', 'DB_PASSWORD');
-    if (envVar && /^[A-Z][A-Z0-9_]*$/.test(envVar)) {
-      passwordEnv = envVar;
-    } else {
-      console.log(`  ${C.yellow(S.warning)} Invalid env var name. Using stored password instead.`);
-      passwordStored = await askSecret('Password');
-    }
+  if (wizardResult.status === 'complete') {
+    details = detailsFromDraft(wizardResult.draft);
+  } else if (wizardResult.status === 'cancelled') {
+    console.log(`  ${C.dim('Aborted.')}`);
+    exit_(0);
   } else {
-    passwordStored = await askSecret('Password');
+    details = await collectLineInteractiveDetails();
   }
 
-  const sslMode = (await askChoice(
-    'SSL mode',
-    ['disable', 'require', 'verify-ca', 'verify-full'],
-    'require',
-  )) as DbEntry['ssl_mode'];
+  const {
+    dbAlias,
+    projectName,
+    dbType,
+    host,
+    srv,
+    portVal,
+    database,
+    user,
+    passwordEnv,
+    passwordStored,
+    sslMode,
+    sslRootCert,
+    authSource,
+    readPreference,
+    readConcern,
+    finalPerm,
+  } = details;
 
-  let sslRootCert: string | null = null;
-  if (sslMode !== 'disable') {
-    for (;;) {
-      const certPath = await ask('SSL root cert path', '');
-      if (certPath.trim() === '') {
-        sslRootCert = null;
-        break;
-      }
-      if (fs.existsSync(certPath)) {
-        sslRootCert = certPath;
-        break;
-      }
-      console.log(`  ${C.red(S.cross)} Cert file not found.`);
-    }
-  }
-
-  let srv = false;
-  let authSource: string | null = null;
-  let readPreference: MongoReadPreference | null = null;
-  let readConcern: MongoReadConcern | null = null;
-  if (dbType === 'mongodb') {
-    srv = await askConfirm('Use a DNS seed list (mongodb+srv://)?', false);
-    authSource = (await ask('Auth source database', database)) || database;
-    readPreference = (await askChoice(
-      'Read preference',
-      [...MONGODB_READ_PREFERENCES],
-      'primary',
-    )) as MongoReadPreference;
-    readConcern = (await askChoice(
-      'Read concern',
-      [...MONGODB_READ_CONCERNS],
-      'local',
-    )) as MongoReadConcern;
-  }
-
-  const permOverride = await askChoice(
-    'Permission',
-    ['read_only', 'auto_upgrade', 'manual', 'full', 'use default'],
-    'use default',
-  );
-  const finalPerm = permOverride === 'use default' ? null : (permOverride as PermissionLevel);
 
   const entry: Omit<DbEntry, 'created_at'> = {
     project_name: projectName,
@@ -849,11 +1030,11 @@ export async function runDbAdd(args: string[] = []): Promise<void> {
   console.log(`    User:       ${C.white(user)}`);
   console.log(`    SSL:        ${C.white(sslMode)}`);
   console.log(
-    `    Password:   ${passwordEnv ? C.green('env var') : C.yellow('stored (AES-256-GCM at rest)')}`,
+    `    Password:   ${describePasswordSource(passwordEnv, passwordStored ? 'prompt' : undefined)}`,
   );
-  console.log(`    Permission: ${C.yellow(permOverride)}`);
+  console.log(`    Permission: ${C.yellow(finalPerm ?? 'default (from machine config)')}`);
   console.log();
-  console.log(`  ${C.dim('Next:')} ${C.cyan('agent start')} ${C.dim('to start the agent.')}`);
+  console.log(`  ${C.dim('Next:')} ${C.cyan('sw-connector agent start')} ${C.dim('to start the agent.')}`);
   console.log();
   exit_(0);
 }

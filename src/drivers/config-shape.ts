@@ -35,6 +35,16 @@ export function defaultPortFor(type: DbType): number {
   }
 }
 
+/** Maximum database-name length accepted by the engine itself. */
+export function maxDatabaseNameLength(type: DbType): number {
+  return type === 'mysql' ? 64 : 63;
+}
+
+/** Maximum user-name length accepted by the engine itself. */
+export function maxUserNameLength(type: DbType): number {
+  return type === 'postgres' ? 63 : 128;
+}
+
 export const MONGODB_READ_PREFERENCES = [
   'primary',
   'primaryPreferred',
@@ -85,21 +95,37 @@ export function validateDriverFields(data: Record<string, unknown>, index: numbe
   const user = data.user;
 
   if (type === 'mysql') {
-    if (typeof database !== 'string' || database.length === 0 || database.length > 64) {
-      fail(index, 'Database name must be 1-64 characters');
+    if (
+      typeof database !== 'string' ||
+      database.length === 0 ||
+      database.length > maxDatabaseNameLength(type)
+    ) {
+      fail(index, `Database name must be 1-${maxDatabaseNameLength(type)} characters`);
     }
-    if (typeof user !== 'string' || user.length === 0 || user.length > 128) {
-      fail(index, 'Username must be 1-128 characters');
+    if (
+      typeof user !== 'string' ||
+      user.length === 0 ||
+      user.length > maxUserNameLength(type)
+    ) {
+      fail(index, `Username must be 1-${maxUserNameLength(type)} characters`);
     }
     return;
   }
 
   if (type === 'mongodb') {
-    if (typeof database !== 'string' || database.length === 0 || database.length > 63) {
-      fail(index, 'Database name must be 1-63 characters');
+    if (
+      typeof database !== 'string' ||
+      database.length === 0 ||
+      database.length > maxDatabaseNameLength(type)
+    ) {
+      fail(index, `Database name must be 1-${maxDatabaseNameLength(type)} characters`);
     }
-    if (typeof user !== 'string' || user.length === 0 || user.length > 128) {
-      fail(index, 'Username must be 1-128 characters');
+    if (
+      typeof user !== 'string' ||
+      user.length === 0 ||
+      user.length > maxUserNameLength(type)
+    ) {
+      fail(index, `Username must be 1-${maxUserNameLength(type)} characters`);
     }
 
     const srv = data.srv;

@@ -78,6 +78,10 @@ export async function runDb(args: string[] = []): Promise<void> {
     console.log();
     console.log(`  ${C.bold('Database Commands')}`);
     console.log();
+    console.log(
+      `  ${C.bold('Engines:')} ${C.cyan('postgres')} (default), ${C.cyan('mysql')}, ${C.cyan('mongodb')}`,
+    );
+    console.log();
     console.log(`    ${C.cyan('db list')}                    List all configured databases (${C.dim('alias: ls')})`);
     console.log(`    ${C.cyan('db show <alias>')}            Show database configuration and live status (${C.dim('alias: info')})`);
     console.log(`    ${C.cyan('db add')}                     Add a database (${C.dim('interactive, --url, or flags')})`);
@@ -85,8 +89,8 @@ export async function runDb(args: string[] = []): Promise<void> {
     console.log(`    ${C.cyan('db remove <alias>')}          Remove a database entry (${C.dim('alias: rm')})`);
     console.log(`    ${C.cyan('db test <alias>')}            Test database connection (${C.dim('--detailed, --all')})`);
     console.log(`    ${C.cyan('db ping <alias>')}            Quick connection latency ping`);
-    console.log(`    ${C.cyan('db connect <alias>')}         Open interactive SQL console`);
-    console.log(`    ${C.cyan('db query <alias> "<SQL>"')}   Execute a query and render results`);
+    console.log(`    ${C.cyan('db connect <alias>')}         Open interactive query console`);
+    console.log(`    ${C.cyan('db query <alias> "<SQL|JSON>"')} Execute a query and render results`);
     console.log(`    ${C.cyan('db logs <alias>')}            View audit logs for this database (${C.dim('-f follow, -q search')})`);
     console.log();
     exit_(0);
@@ -98,6 +102,6 @@ export async function runDb(args: string[] = []): Promise<void> {
   }
 
   console.log(`  ${C.yellow('Unknown database command:')} ${C.white(sub)}`);
-  console.log(`  ${C.dim('Run')} ${C.cyan('sw-agent db --help')} ${C.dim('for usage.')}\n`);
+  console.log(`  ${C.dim('Run')} ${C.cyan('sw-connector db --help')} ${C.dim('for usage.')}\n`);
   exit_(1);
 }

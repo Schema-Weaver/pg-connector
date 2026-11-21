@@ -307,7 +307,7 @@ export function createFaultShutdownController(deps: FaultShutdownDeps): FaultShu
       if (timedOut) {
         log(
           `[fatal] The fault flush did not complete within ${timeoutMs}ms; exiting anyway. ` +
-            'The last audit records may be missing — `sw-agent audit verify` will report the ' +
+            'The last audit records may be missing — `sw-connector audit verify` will report the ' +
             'chain as truncated.',
         );
       } else {

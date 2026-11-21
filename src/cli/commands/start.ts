@@ -162,7 +162,7 @@ export async function runStart(args: string[], opts: StartOptions = {}): Promise
     );
     console.log(`      ${err instanceof Error ? err.message : String(err)}`);
     console.log(
-      `      ${C.dim('The agent token is a permanent credential, so only wss:// is accepted.')}`,
+      `      ${C.dim('The agent token is a permanent credential, so plaintext is loopback-only.')}`,
     );
     console.log();
     exit_(1);
@@ -296,9 +296,9 @@ function reportAuditStartupCheck(
       `      Fix the audit directory (it must be a directory with mode ${C.white('0700')} and writable)`,
     );
     console.log(
-      `      and, if a log exists, run ${C.cyan('sw-agent audit verify')} to see why it does not check out.`,
+      `      and, if a log exists, run ${C.cyan('sw-connector audit verify')} to see why it does not check out.`,
     );
-    console.log(`      ${C.dim('Run sw-agent doctor to repair directory modes.')}`);
+    console.log(`      ${C.dim('Run sw-connector doctor to repair directory modes.')}`);
     console.log();
     return false;
   }

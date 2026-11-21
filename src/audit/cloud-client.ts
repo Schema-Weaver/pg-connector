@@ -18,8 +18,9 @@ export interface CloudClientOptions {
   /** Max retry attempts per batch before dropping. Default 3. */
   maxRetries?: number;
   /**
-   * Allow a cleartext `http:` target. Only wire this to an explicit,
-   * non-persisted operator flag (`--insecure-transport`).
+   * Allow a non-loopback cleartext `http:` target. Programmatic opt-in for
+   * embedders only; the CLI does not expose a plaintext flag. Loopback
+   * plaintext is accepted automatically with a one-time warning.
    */
   allowInsecureTransport?: boolean;
   /**
@@ -422,10 +423,9 @@ function normalizePositive(value: number | undefined, fallback: number): number 
  * wss://api.example.com/agent  →  https://api.example.com
  *
  * Audit H-03: the returned scheme is derived through the shared transport
- * guard, never guessed. A `ws://`/`http://` input throws
- * `TransportSecurityError` rather than silently yielding a plaintext base
- * (the previous `ws:// → http://` mapping) or an unparseable
- * `split('/')[0] + '//' + split('/')[2]` fragment.
+ * guard, never guessed. A remote `ws://`/`http://` input throws
+ * `TransportSecurityError`; a loopback `ws://` is mapped to `http://` because
+ * the target never leaves the machine.
  */
 export function deriveHttpBase(wsUrl: string, opts: TransportGuardOptions = {}): string {
   const parsed = toHttpUrl(wsUrl, {

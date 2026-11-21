@@ -140,7 +140,7 @@ function printLogsHelp(): void {
   console.log();
   console.log(C.bold('  Audit Logs Command'));
   console.log();
-  console.log(`  ${C.dim('Usage:')} sw-agent logs [options]`);
+  console.log(`  ${C.dim('Usage:')} sw-connector logs [options]`);
   console.log();
   console.log(C.brand('  Interactive Viewer:'));
   console.log(`    ${C.cyan('-i, --interactive')}         Open interactive TUI log viewer (default in REPL)`);

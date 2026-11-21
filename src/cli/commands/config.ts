@@ -5,7 +5,7 @@ import {
   MachineConfig,
   PermissionLevel,
 } from '../../config/machine-config';
-import { isSecureCloudUrl } from '../../config/schema';
+import { isValidCloudUrl } from '../../config/schema';
 import {
   getAgentHome,
   getMachineConfigPath,
@@ -188,7 +188,6 @@ export async function runConfigGet(args: string[]): Promise<void> {
 export async function runConfigSet(args: string[]): Promise<void> {
   const key = args[0];
   const value = args[1];
-  const allowInsecureTransport = args.includes('--insecure-transport');
 
   if (!key || value === undefined) {
     console.log(`  ${C.yellow('Usage:')} ${C.cyan('config set <key> <value>')}`);
@@ -203,16 +202,16 @@ export async function runConfigSet(args: string[]): Promise<void> {
     mutateMachineConfig((config) => {
       switch (key) {
         case 'cloud_url':
-          if (!isSecureCloudUrl(value)) {
-            console.log(`  ${C.red('Error:')} cloud_url must be a wss:// URL`);
+          if (!isValidCloudUrl(value)) {
             console.log(
-              `  ${C.dim('ws:// and http:// are refused: the agent token would be sent in cleartext.')}`,
+              `  ${C.red('Error:')} cloud_url must be wss://, or ws:// on a loopback host`,
             );
-            if (allowInsecureTransport) {
-              console.log(
-                `  ${C.red(S.warning)} ${C.yellow('--insecure-transport')} ${C.yellow('was passed but plaintext cloud URLs are no longer supported.')} ${C.yellow('Use a --relay override on a dev token instead.')}`,
-              );
-            }
+            console.log(
+              `  ${C.dim('Plaintext ws:// is accepted only for localhost, 127.0.0.0/8, and ::1.')}`,
+            );
+            console.log(
+              `  ${C.dim('A remote relay must use wss:// so the agent token is never sent in cleartext.')}`,
+            );
             exit_(1);
           }
           config.cloud_url = value;

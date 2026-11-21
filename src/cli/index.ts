@@ -27,11 +27,12 @@ import { startInteractive } from './interactive';
 import { printBanner } from './banner';
 import { C, clearScreen } from './ui';
 
-const HELP_TEXT = `${C.bold('Schema Weaver Connector')} v${VERSION}  ${C.dim('— bridge between your browser IDE and PostgreSQL')}
+const HELP_TEXT = `${C.bold('Schema Weaver Connector')} v${VERSION}  ${C.dim('— bridge between your browser IDE and your databases')}
 
-${C.dim('Usage:')} pg-connector ${C.cyan('<command>')} [options]
-${C.dim('Run pg-connector with no arguments to start the interactive REPL.')}
-${C.dim('Aliases: schemaweaver, sw-agent, db-connector')}
+${C.dim('Usage:')} sw-connector ${C.cyan('<command>')} [options]
+${C.dim('Run sw-connector with no arguments to start the interactive REPL.')}
+${C.dim('Aliases: schemaweaver, sw-agent, db-connector, pg-connector')}
+${C.dim('Engines: postgres (default), mysql, mongodb')}
 
 ${C.bold(C.brand('Databases'))}
   ${C.cyan('db list')}            List configured databases          ${C.dim('(alias: ls, db)')}
@@ -41,8 +42,8 @@ ${C.bold(C.brand('Databases'))}
   ${C.cyan('db remove <alias>')}  Remove a database entry            ${C.dim('(alias: rm)')}
   ${C.cyan('db test <alias>')}    Test connection & latency          ${C.dim('(alias: test, --detailed, --all)')}
   ${C.cyan('db ping <alias>')}    Quick connection check             ${C.dim('(alias: ping)')}
-  ${C.cyan('db connect <alias>')} Interactive SQL console            ${C.dim('(alias: connect)')}
-  ${C.cyan('db query <a> <sql>')} Execute SQL statement & render    ${C.dim('(alias: query, --json)')}
+  ${C.cyan('db connect <alias>')} Interactive query console         ${C.dim('(alias: connect)')}
+  ${C.cyan('db query <a> <sql|json>')} Execute a statement & render  ${C.dim('(alias: query, --json)')}
   ${C.cyan('db logs <alias>')}    Audit logs for database project    ${C.dim('(-f follow, -q search)')}
 
 ${C.bold(C.brand('Projects'))}
@@ -212,7 +213,7 @@ async function runNamed(command: string, rest: string[]): Promise<number> {
     case 'clear': clearScreen(); printBanner(); break;
     default:
       console.error(`\n  ${C.yellow('Unknown command:')} ${C.white(command)}`);
-      console.error(`  ${C.dim('Run')} ${C.cyan('pg-connector --help')} ${C.dim('for usage.')}\n`);
+      console.error(`  ${C.dim('Run')} ${C.cyan('sw-connector --help')} ${C.dim('for usage.')}\n`);
       return 1;
   }
   return 0;

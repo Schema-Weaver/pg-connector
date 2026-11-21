@@ -9,8 +9,12 @@
  *
  * The method allow-list is the classification boundary:
  *
- *   find | aggregate | count | distinct  -> read
- *   anything else                        -> refused
+ *   find | aggregate | count | distinct | listCollections -> read
+ *   anything else                                         -> refused
+ *
+ * `listCollections` is deliberately database-scoped and takes no collection,
+ * filter or pipeline. It is the only metadata surface exposed here; there is
+ * no `db.command()` passthrough behind it.
  *
  * There is intentionally no `runCommand` method. A command passthrough would
  * make every server-side operator reachable and would turn the allow-list into
@@ -31,13 +35,19 @@
  */
 import { DriverParseError } from './errors';
 
-export type MongoReadMethod = 'find' | 'aggregate' | 'count' | 'distinct';
+export type MongoReadMethod =
+  | 'find'
+  | 'aggregate'
+  | 'count'
+  | 'distinct'
+  | 'listCollections';
 
 export const MONGO_READ_METHODS: readonly MongoReadMethod[] = [
   'find',
   'aggregate',
   'count',
   'distinct',
+  'listCollections',
 ];
 
 /**
@@ -87,10 +97,12 @@ const OPTION_KEYS: Readonly<Record<MongoReadMethod, ReadonlySet<string>>> = {
   ]),
   count: new Set(['limit', 'skip', 'maxTimeMS', 'hint', 'collation', 'comment']),
   distinct: new Set(['maxTimeMS', 'collation', 'comment']),
+  listCollections: new Set(['nameOnly', 'batchSize', 'maxTimeMS']),
 };
 
 export interface MongoQuery {
-  collection: string;
+  /** Absent only for database-scoped commands such as `listCollections`. */
+  collection?: string;
   method: MongoReadMethod;
   filter?: Record<string, unknown>;
   pipeline?: Array<Record<string, unknown>>;
@@ -279,6 +291,9 @@ function validateOptions(
   if (value.allowDiskUse !== undefined && value.allowDiskUse !== false) {
     fail('option "allowDiskUse" must be false; a read must not spill to disk');
   }
+  if (value.nameOnly !== undefined && value.nameOnly !== true) {
+    fail('option "nameOnly" must be true when supplied');
+  }
 
   assertNoBlockedOperators(value, 'options');
   return value;
@@ -313,12 +328,27 @@ export function parseMongoQuery(text: string): MongoQuery {
     );
   }
   const readMethod = method as MongoReadMethod;
+  const isDatabaseScoped = readMethod === 'listCollections';
 
-  const collection = validateCollection(parsed.collection);
+  const collection = parsed.collection === undefined
+    ? undefined
+    : validateCollection(parsed.collection);
   const filter = validateFilter(parsed.filter);
   const pipeline = validatePipeline(parsed.pipeline);
   const field = validateField(parsed.field);
   const options = validateOptions(parsed.options, readMethod);
+
+  if (isDatabaseScoped) {
+    // Reject rather than ignore: a caller that supplies a collection probably
+    // intended a different command, and widening this contract later must be
+    // an explicit change to the allow-list.
+    if (collection !== undefined) fail('"collection" is not valid for method "listCollections"');
+    if (filter !== undefined) fail('"filter" is not valid for method "listCollections"');
+    if (pipeline !== undefined) fail('"pipeline" is not valid for method "listCollections"');
+    if (field !== undefined) fail('"field" is not valid for method "listCollections"');
+  } else if (collection === undefined) {
+    fail(`method "${readMethod}" requires "collection"`);
+  }
 
   if (readMethod === 'find') {
     if (pipeline !== undefined) fail('"pipeline" is only valid for method "aggregate"');
@@ -329,13 +359,13 @@ export function parseMongoQuery(text: string): MongoQuery {
   } else if (readMethod === 'count') {
     if (pipeline !== undefined) fail('"pipeline" is only valid for method "aggregate"');
     if (field !== undefined) fail('"field" is only valid for method "distinct"');
-  } else {
+  } else if (readMethod === 'distinct') {
     if (pipeline !== undefined) fail('"pipeline" is only valid for method "aggregate"');
     if (field === undefined) fail('method "distinct" requires "field"');
   }
 
   return {
-    collection,
+    ...(collection !== undefined ? { collection } : {}),
     method: readMethod,
     ...(filter ? { filter } : {}),
     ...(pipeline ? { pipeline } : {}),

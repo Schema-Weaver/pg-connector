@@ -4,6 +4,7 @@ import { C, S, renderTable, createSpinner } from '../ui';
 import { Pool, PoolConfig } from 'pg';
 import { dbTypeOf } from '../../drivers/config-shape';
 import { createDriverForEntry } from '../../drivers/factory';
+import { buildSslConfig } from '../../execution/pool';
 
 function exit_(code: number): never {
   if (isReplMode()) {
@@ -13,6 +14,14 @@ function exit_(code: number): never {
 }
 
 export async function runDbLs(args: string[]): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log();
+    console.log(`  ${C.yellow('Usage:')} ${C.white('db list')} [--json] [--reachable]`);
+    console.log(`  ${C.dim('Shows the engine (TYPE) for every configured database.')}`);
+    console.log();
+    exit_(0);
+  }
+
   if (!dbConfigExists()) {
     console.log(`  ${C.yellow(S.warning)} No databases configured. Run ${C.cyan('db add')} first.`);
     exit_(0);
@@ -79,11 +88,9 @@ export async function runDbLs(args: string[]): Promise<void> {
             password,
             connectionTimeoutMillis: 3000,
           };
-          if (db.ssl_mode !== 'disable') {
-            poolCfg.ssl = {
-              rejectUnauthorized:
-                db.ssl_mode === 'verify-ca' || db.ssl_mode === 'verify-full',
-            };
+          const ssl = buildSslConfig(db.ssl_mode, db.ssl_root_cert, db.host);
+          if (ssl) {
+            poolCfg.ssl = ssl;
           }
           const pool = new Pool(poolCfg);
           try {

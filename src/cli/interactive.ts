@@ -1,6 +1,6 @@
 import { stdin, stdout } from 'node:process';
 import { printBanner } from './banner';
-import { setReplMode } from './prompt';
+import { isReplInputActive, setReplInputActive, setReplMode } from './prompt';
 import { runInit } from './commands/init';
 import {
   runDbAdd,
@@ -32,7 +32,7 @@ import {
   visibleLength,
 } from './ui';
 
-const PROMPT = C.brand('sw-agent') + C.gray(' > ');
+const PROMPT = C.brand('sw-connector') + C.gray(' > ');
 
 interface CommandDesc {
   name: string;
@@ -298,7 +298,12 @@ async function runCommand(fn: () => Promise<void>): Promise<void> {
 }
 
 export async function dispatchCommand(input: string): Promise<'continue' | 'exit'> {
-  const trimmed = input.trim();
+  const raw = input.trim();
+  if (!raw) return 'continue';
+
+  // The REPL advertises "/" as the command-palette prefix. Accept it on direct
+  // input too, so /exit and /help behave like their bare forms.
+  const trimmed = raw.startsWith('/') ? raw.slice(1).trim() : raw;
   if (!trimmed) return 'continue';
 
   if (trimmed === 'exit' || trimmed === 'quit') return 'exit';
@@ -402,7 +407,7 @@ class TerminalRepl {
   }
 
   private onKey(chunk: Buffer) {
-    if (this.isExecuting) return;
+    if (this.isExecuting || !isReplInputActive()) return;
 
     const sequences = splitInput(chunk.toString('utf8'));
     for (const token of sequences) {
@@ -563,10 +568,12 @@ class TerminalRepl {
 
     this.isExecuting = true;
     this.setRawMode(false);
+    setReplInputActive(false);
     let result: 'continue' | 'exit' = 'continue';
     try {
       result = await dispatchCommand(input);
     } finally {
+      setReplInputActive(true);
       this.setRawMode(true);
       this.isExecuting = false;
     }
@@ -686,6 +693,7 @@ class TerminalRepl {
   private shutdown() {
     this.clearRenderedBlock();
     setReplMode(false);
+    setReplInputActive(true);
     stdin.off('data', this.onDataBound);
     stdout.off('resize', this.onResizeBound);
     if (this.resizeTimer) clearTimeout(this.resizeTimer);

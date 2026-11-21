@@ -1,4 +1,4 @@
-# @schema-weaver/pg-connector · `db-connector`
+# @schema-weaver/pg-connector · `sw-connector`
 
 > **Secure Multi-Database Connector for Schema Weaver with Local Credential Boundary (LCB) and Connector-Enforced Read-Only Execution (CERO).**
 > Connects local or VPC-hosted PostgreSQL, MySQL, and MongoDB databases to Schema Weaver. Database credentials never leave your environment.
@@ -13,7 +13,7 @@
 
 ## What is `@schema-weaver/pg-connector`?
 
-`@schema-weaver/pg-connector` (executable as `db-connector`, `pg-connector`, `sw-agent`, or `schemaweaver`) is a lightweight on-premises daemon and client library that links customer PostgreSQL, MySQL, and MongoDB databases with the [Schema Weaver](https://schemaweaver.dev) web platform (Data Explorer, SQL Editor, and Schema Migration Engine). `db-connector` is the canonical binary name; the npm package keeps its original name so existing installs and upgrade paths are unchanged.
+`@schema-weaver/pg-connector` (executable as `sw-connector`, `db-connector`, `pg-connector`, `sw-agent`, or `schemaweaver`) is a lightweight on-premises daemon and client library that links customer PostgreSQL, MySQL, and MongoDB databases with the [Schema Weaver](https://schemaweaver.dev) web platform (Data Explorer, SQL Editor, and Schema Migration Engine). `sw-connector` is the canonical binary name; the npm package keeps its original name so existing installs and upgrade paths are unchanged.
 
 Unlike standard database connection proxies that store customer passwords and connection strings in cloud vaults, the Schema Weaver connector operates as a **customer-side execution and security boundary**.
 
@@ -47,7 +47,7 @@ Unlike standard database connection proxies that store customer passwords and co
 ```
 
 ### 1. Local Credential Boundary (LCB)
-Database host, port, username, password, connection strings, and SSL private keys **remain strictly inside your environment** in `~/.sw-agent/databases.config.json` (POSIX file mode `0o600`) or local OS environment variables. Passwords stored in that file are encrypted at rest with AES-256-GCM under a scrypt-derived key. The cloud control plane receives scoped identities (`agent_id`, `db_alias`, and `database` name) plus the query text, results, and schema needed to serve your session, carried over TLS, and an active connection token hash: the agent sends `HMAC-SHA256(token, "sw-agent/relay-auth/v1")` rather than the token itself, so the long-lived secret never appears on the wire.
+Database host, port, username, password, connection strings, and SSL private keys **remain strictly inside your environment** in `~/.sw-agent/databases.config.json` (POSIX file mode `0o600`) or local OS environment variables. Passwords stored in that file are encrypted at rest with AES-256-GCM under a scrypt-derived key. The cloud control plane receives scoped identities (`agent_id`, `db_alias`, and `database` name) plus the query text, results, and schema needed to serve your session, carried over TLS (or over a loopback socket for a local development relay), and an active connection token hash: the agent sends `HMAC-SHA256(token, "sw-agent/relay-auth/v1")` rather than the token itself, so the long-lived secret never appears on the wire.
 
 ### 2. Connector-Enforced Read-Only Execution (CERO)
 The connector acts as the final gatekeeper between external requests and your database engine:
@@ -56,14 +56,14 @@ The connector acts as the final gatekeeper between external requests and your da
 - **MongoDB Allow-List**: MongoDB has no SQL grammar, so a command is a JSON document naming a collection and one of four read methods: `find`, `aggregate`, `count`, or `distinct`. There is deliberately no `runCommand` passthrough. Write stages (`$out`, `$merge`) and caller-supplied JavaScript (`$where`, `$function`, `$accumulator`) are rejected anywhere in a filter, pipeline, or option document, as are change streams and `system.*` collections.
 - **PostgreSQL Verdict Before "Read"**: A PostgreSQL `SELECT` counts as a read only when every function it references is reported by `pg_proc` as `IMMUTABLE` and not `SECURITY DEFINER`. Anything else — volatile, stable, security-definer, or unresolvable — is escalated to the DDL capability requirement, so an operator-written function cannot be reached through a read. This is deliberately stricter than PostgreSQL's own guarantee: a `SELECT now()` needs the `ddl` capability.
 - **Anti-Spoofing**: The browser's claimed `intent` is advisory only. If it disagrees with the parsed classification, the request is rejected — and no `intent` value grants an exemption.
-- **Enforced by the database too**: For a `read_only` database PostgreSQL runs with `default_transaction_read_only = on` (a write raises `25006`); MySQL sets `SET SESSION TRANSACTION READ ONLY` and opens `START TRANSACTION READ ONLY` around every read (a write raises `1792`); MongoDB forces a read preference and read concern. Even a classifier miss cannot write through a read, and the connected database role remains the final authority. `db-connector doctor` reports PostgreSQL role attributes, and the README's role guidance covers MySQL and MongoDB.
+- **Enforced by the database too**: For a `read_only` database PostgreSQL runs with `default_transaction_read_only = on` (a write raises `25006`); MySQL sets `SET SESSION TRANSACTION READ ONLY` and opens `START TRANSACTION READ ONLY` around every read (a write raises `1792`); MongoDB forces a read preference and read concern. Even a classifier miss cannot write through a read, and the connected database role remains the final authority. `sw-connector doctor` reports PostgreSQL role attributes, and the README's role guidance covers MySQL and MongoDB.
 - **Role-Based Access Control**: Enforces 4 permission levels (`read_only`, `auto_upgrade`, `manual`, `full`) and role capabilities (`admin`, `developer`, `data_reader`, `viewer`) locally before touching the connection pool. The role arrives inside an envelope authenticated by the relay, and must fall within both the set negotiated for the session and this installation's `security.max_negotiable_role` ceiling (default `developer`).
 
 ### 3. Transient Data Plane
 Query results are streamed in memory over TLS WebSocket connections directly to the browser session. Rows exist ephemerally in RAM buffers during transit; the connector **never writes them to disk**, and nothing in this package persists them to any cache or database.
 
 ### 4. Cryptographic Audit Log
-Every operation (query, migration, schema introspection, cancellation) is recorded locally in `~/.sw-agent/audit/audit.jsonl` using a tamper-evident **HMAC-SHA256 cryptographic hash chain** with a monotonic sequence number and an anchored head. Each record names the database the request actually resolved to. Chain integrity is verifiable on demand with `db-connector audit verify`.
+Every operation (query, migration, schema introspection, cancellation) is recorded locally in `~/.sw-agent/audit/audit.jsonl` using a tamper-evident **HMAC-SHA256 cryptographic hash chain** with a monotonic sequence number and an anchored head. Each record names the database the request actually resolved to. Chain integrity is verifiable on demand with `sw-connector audit verify`.
 
 ---
 
@@ -79,7 +79,7 @@ npm install -g @schema-weaver/pg-connector
 npx @schema-weaver/pg-connector init
 ```
 
-> **Available CLI binaries**: After global installation, `db-connector`, `pg-connector`, `sw-agent`, and `schemaweaver` can all be used interchangeably.
+> **Available CLI binaries**: After global installation, `sw-connector`, `db-connector`, `pg-connector`, `sw-agent`, and `schemaweaver` can all be used interchangeably.
 
 ### As a Project Dependency
 
@@ -96,7 +96,7 @@ npm install @schema-weaver/pg-connector
 Initialize machine configuration and generate your connector token:
 
 ```bash
-db-connector init
+sw-connector init
 ```
 ```text
   Schema Weaver Agent — First Time Setup
@@ -120,14 +120,16 @@ db-connector init
 
 #### Option A: Interactive Mode (with Live Connection Probe)
 ```bash
-db-connector db add
+sw-connector db add
 ```
-Follow the interactive prompts. The password is read from a masked prompt, stored encrypted in the local configuration file. You can instead point at an environment variable (see Option C).
+In an interactive terminal this opens a minimal full-screen wizard: **engine → optional connection URL → manual fields if needed → password source → SSL → (MongoDB-only settings) → permission → alias → review**. Leave the URL empty for manual entry. The alias is suggested from the database name near the end, and the project defaults to it. Use `↑`/`↓` or the mouse to move, `Enter` to continue, `1`-`9` to jump to a choice, `Esc` to go back, and `Ctrl+C` to cancel. A connection URL must not contain a password; the next step chooses an environment variable reference or a masked, encrypted-at-rest value.
+
+In a piped or captured terminal, choice prompts use plain numbered input. Setting `SW_AGENT_NO_TUI=1` in a real terminal also skips the full-screen wizard and returns to the compact line prompts.
 
 #### Option B: Non-Interactive via Connection URL
 ```bash
 # The URL carries no password: a --url with a password is refused.
-db-connector db add \
+sw-connector db add \
   --url postgresql://app_user@localhost:5432/acme_prod \
   --alias acme-db \
   --project acme \
@@ -137,7 +139,7 @@ db-connector db add \
 
 #### Option C: Non-Interactive via Command-Line Flags
 ```bash
-db-connector db add \
+sw-connector db add \
   --alias analytics \
   --project warehouse \
   --host 10.0.1.20 \
@@ -153,7 +155,7 @@ db-connector db add \
 #### MySQL
 
 ```bash
-db-connector db add \
+sw-connector db add \
   --type mysql \
   --alias orders-db \
   --project orders \
@@ -166,12 +168,12 @@ db-connector db add \
   --permission read_only
 ```
 
-MySQL entries default to port `3306`. A `--url` must start with `mysql://`; a password in the URL is refused, as for PostgreSQL.
+MySQL entries default to port `3306`. A `--url` with the `mysql://` scheme infers `--type mysql`; an explicit `--type` is authoritative. A password in the URL is refused, as for PostgreSQL.
 
 #### MongoDB
 
 ```bash
-db-connector db add \
+sw-connector db add \
   --type mongodb \
   --alias events \
   --project analytics \
@@ -185,7 +187,7 @@ db-connector db add \
   --ssl require
 ```
 
-MongoDB entries default to port `27017`. `--srv` builds a `mongodb+srv://` URI; with SRV the port is ignored because DNS supplies the hosts. MongoDB settings are stored field-by-field (`host`, `port`, `database`, `user`, password) rather than as a URI, so the password is encrypted under the credential key like every other engine. `--read-preference` accepts `primary`, `primaryPreferred`, `secondary`, `secondaryPreferred`, or `nearest`; `--read-concern` accepts `local`, `available`, `majority`, or `linearizable`. A `--url` must start with `mongodb://` or `mongodb+srv://` and must not contain a password.
+MongoDB entries default to port `27017`. `--srv` builds a `mongodb+srv://` URI; with SRV the port is ignored because DNS supplies the hosts. MongoDB settings are stored field-by-field (`host`, `port`, `database`, `user`, password) rather than as a URI, so the password is encrypted under the credential key like every other engine. `--read-preference` accepts `primary`, `primaryPreferred`, `secondary`, `secondaryPreferred`, or `nearest`; `--read-concern` accepts `local`, `available`, `majority`, or `linearizable`. A `--url` with the `mongodb://` or `mongodb+srv://` scheme infers `--type mongodb`; an explicit `--type` is authoritative. The URL must not contain a password.
 
 #### Password sources
 
@@ -193,7 +195,7 @@ MongoDB entries default to port `27017`. `--srv` builds a `mongodb+srv://` URI; 
 
 | Channel | Notes |
 | :--- | :--- |
-| `SW_AGENT_DB_PASSWORD=<value> db-connector db add …` | Read from the environment at run time |
+| `SW_AGENT_DB_PASSWORD=<value> sw-connector db add …` | Read from the environment at run time |
 | `--password-stdin` | Read from stdin |
 | `--password-file <path>` | Must be mode `0600` and must not be a symlink |
 | `--env <VAR>` | Stores only the variable **name**; the value is read at connect time |
@@ -251,22 +253,22 @@ Passwords are not shown above: `db add` stores them encrypted as `password_store
 
 ```bash
 # Fast reachability ping
-db-connector db ping acme-db
+sw-connector db ping acme-db
 
 # Full connection test with latency measurement
-db-connector db test acme-db
+sw-connector db test acme-db
 
 # Multi-step deep diagnostics (network, catalog, permissions, timeouts)
-db-connector db test acme-db --detailed
+sw-connector db test acme-db --detailed
 
 # Detailed configuration and connection inspection
-db-connector db show acme-db
+sw-connector db show acme-db
 
 # Execute a quick query directly from the terminal
-db-connector db query acme-db "SELECT current_database(), version();"
+sw-connector db query acme-db "SELECT current_database(), version();"
 
 # Launch an interactive database console session
-db-connector db connect acme-db
+sw-connector db connect acme-db
 ```
 
 #### MongoDB query format
@@ -274,7 +276,7 @@ db-connector db connect acme-db
 MongoDB is not queried with SQL. `db query`, the daemon's data channel, and the SQL Editor carry a MongoDB command as a JSON string:
 
 ```bash
-db-connector db query events \
+sw-connector db query events \
   '{"collection":"events","method":"find","filter":{"type":"login"},"options":{"limit":50,"sort":{"created_at":-1}}}'
 ```
 
@@ -291,16 +293,16 @@ Top-level keys are limited to `collection`, `method`, `filter`, `pipeline`, `fie
 
 ```bash
 # Foreground execution (great for testing or Docker containers)
-db-connector start
+sw-connector start
 
 # Background daemon mode (standard server operation)
-db-connector start --daemon
+sw-connector start --daemon
 ```
 
 ### Step 5: Check Status & Health
 
 ```bash
-db-connector status
+sw-connector status
 ```
 ```text
   Schema Weaver Agent — Status
@@ -327,6 +329,23 @@ db-connector status
 3. Paste your **Agent ID** (`agt_...`) and **Token** (`swagt_...`).
 4. The cloud pairs immediately with your daemon. All database operations are now routed through your local connector.
 
+### Local development relay
+
+To test against a backend running on this machine instead of the hosted relay:
+
+```bash
+sw-connector config set cloud_url ws://localhost:3000
+sw-connector start --foreground
+```
+
+`ws://` is accepted **only** for a loopback host (`localhost`, `127.0.0.1`, other `127.0.0.0/8` addresses, or `::1`). Every remote relay still requires `wss://`; a remote `ws://` or `http://` URL is refused because the agent token is a permanent bearer credential. The audit ingest base is derived from the same URL, so it becomes `http://localhost:3000` for this setup. The agent still needs a token that the target backend recognises — use the pairing step above with your local UI if this token has not been registered there.
+
+Restore the hosted relay with:
+
+```bash
+sw-connector config set cloud_url wss://api.schemaweaver.dev
+```
+
 ---
 
 ## Complete CLI Command Reference
@@ -335,44 +354,44 @@ db-connector status
 
 | Command | Description |
 | :--- | :--- |
-| `db-connector db add` | Add a database. `--type postgres\|mysql\|mongodb` selects the engine (default `postgres`); a `--url` protocol must match. Passwords come from the masked prompt, `--password-stdin`, `--password-file`, `--env <VAR>` or `SW_AGENT_DB_PASSWORD`; `--password`/`--pw` are refused. MongoDB adds `--srv`, `--auth-source`, `--read-preference`, and `--read-concern` |
-| `db-connector db list` (or `db ls`) | Display all configured databases in a formatted table, including engine type |
-| `db-connector db show <alias>` | Show detailed configuration and credentials mode for a database (`--json` supported). The password is always redacted |
-| `db-connector db edit <alias>` | Modify database settings (interactive or via flags: `--host`, `--port`, `--env`, etc.) |
-| `db-connector db test <alias>` | Test connection latency (`--detailed` for PostgreSQL deep diagnostics) |
-| `db-connector db ping <alias>` | Quick millisecond round-trip reachability ping |
-| `db-connector db query <alias> "<SQL\|JSON>"` | Execute a query and output tabular results. PostgreSQL/MySQL take SQL; MongoDB takes a JSON command |
-| `db-connector db connect <alias>` | Open an interactive console using the same classification, timeout, and row caps. `\dt`, `\dn`, and `\l` are PostgreSQL catalog shortcuts |
-| `db-connector db logs <alias>` | View recent audit execution logs for a specific database |
-| `db-connector db remove <alias>` | Detach and remove a database from the local configuration |
+| `sw-connector db add` | Add a database. `--type postgres\|mysql\|mongodb` selects the engine; without it, the engine is inferred from a `--url` scheme (`postgres://`, `postgresql://`, `mysql://`, `mongodb://`, `mongodb+srv://`) and otherwise defaults to `postgres`. Passwords come from the masked prompt, `--password-stdin`, `--password-file`, `--env <VAR>` or `SW_AGENT_DB_PASSWORD`; `--password`/`--pw` are refused. MongoDB adds `--srv`, `--auth-source`, `--read-preference`, and `--read-concern` |
+| `sw-connector db list` (or `db ls`) | Display all configured databases in a formatted table, including engine type |
+| `sw-connector db show <alias>` | Show detailed configuration and credentials mode for a database (`--json` supported). The password is always redacted |
+| `sw-connector db edit <alias>` | Modify database settings, including `--type` and MongoDB fields (interactive or via flags: `--host`, `--port`, `--env`, etc.) |
+| `sw-connector db test <alias>` | Test connection latency (`--detailed` for PostgreSQL deep diagnostics) |
+| `sw-connector db ping <alias>` | Quick millisecond round-trip reachability ping |
+| `sw-connector db query <alias> "<SQL\|JSON>"` | Execute a query and output tabular results. PostgreSQL/MySQL take SQL; MongoDB takes a JSON command |
+| `sw-connector db connect <alias>` | Open an interactive query console using the same classification, timeout, and row caps. PostgreSQL offers `\dt`/`\dn`/`\l`; MySQL offers `SHOW TABLES`/`SHOW DATABASES`; MongoDB accepts JSON commands such as `{"collection":"users","method":"find"}` |
+| `sw-connector db logs <alias>` | View recent audit execution logs for a specific database |
+| `sw-connector db remove <alias>` | Detach and remove a database from the local configuration |
 
 ### Daemon & Lifecycle Management
 
 | Command | Description |
 | :--- | :--- |
-| `db-connector start` | Start the connector in foreground mode |
-| `db-connector start --daemon` | Start the connector as a background daemon process |
-| `db-connector stop` | Send `SIGTERM` to the daemon and clean up PID files (`--force` for `SIGKILL`) |
-| `db-connector status` | Show real-time process health, connection channel states, and active database count |
-| `db-connector clean` | Stop running daemons and remove stale PID files, status files, and orphaned sockets |
-| `db-connector doctor` | Run pre-flight checks: configs, file permissions, node version, and database reachability |
+| `sw-connector start` | Start the connector in foreground mode |
+| `sw-connector start --daemon` | Start the connector as a background daemon process |
+| `sw-connector stop` | Send `SIGTERM` to the daemon and clean up PID files (`--force` for `SIGKILL`) |
+| `sw-connector status` | Show real-time process health, connection channel states, and active database count |
+| `sw-connector clean` | Stop running daemons and remove stale PID files, status files, and orphaned sockets |
+| `sw-connector doctor` | Run pre-flight checks: configs, file permissions, node version, and database reachability |
 
 ### Configuration Management (`config`)
 
 | Command | Description |
 | :--- | :--- |
-| `db-connector config show` | View sanitized machine configuration (`--token` reveals the pairing token) |
-| `db-connector config get <key>` | Read a specific configuration key (e.g. `cloud_url`, `permission`, `log_level`) |
-| `db-connector config set <key> <val>` | Update a specific configuration key |
-| `db-connector config path` | Print the filesystem paths to all configuration, audit, and log files |
+| `sw-connector config show` | View sanitized machine configuration (`--token` reveals the pairing token) |
+| `sw-connector config get <key>` | Read a specific configuration key (e.g. `cloud_url`, `permission`, `log_level`) |
+| `sw-connector config set <key> <val>` | Update a specific configuration key |
+| `sw-connector config path` | Print the filesystem paths to all configuration, audit, and log files |
 
 ### Security & Audit (`logs`, `audit`)
 
 | Command | Description |
 | :--- | :--- |
-| `db-connector logs` | View the cryptographic audit log (`--limit <n>`, `--user <id>`, `--action <query\|migrate>`) |
-| `db-connector logs --follow` | Stream live audit log events as they execute |
-| `db-connector audit verify` | Verify the cryptographic SHA-256 hash chain to ensure logs have not been tampered with |
+| `sw-connector logs` | View the cryptographic audit log (`--limit <n>`, `--user <id>`, `--action <query\|migrate>`) |
+| `sw-connector logs --follow` | Stream live audit log events as they execute |
+| `sw-connector audit verify` | Verify the cryptographic SHA-256 hash chain to ensure logs have not been tampered with |
 
 ---
 
@@ -388,7 +407,7 @@ db-connector status
 | `db test --detailed` | ✅ full diagnostics | ⚠️ connectivity only | ⚠️ connectivity only |
 
 - Introspection, migrations, and cancellation are PostgreSQL-only. Against a MySQL or MongoDB entry the daemon returns `unsupported_database_operation`; those operations never fall through to PostgreSQL code. `db test --detailed` on MySQL or MongoDB still verifies the connection and reports a note that the extra PostgreSQL catalog diagnostics do not apply.
-- MySQL `SHOW`, `SET`, `CALL`, `PREPARE`, and `LOAD DATA` are parsed but cannot satisfy a read intent, so cloud requests for them are refused. Use the engine's own tooling for server administration.
+- MySQL `SHOW`, `SET`, `CALL`, `PREPARE`, and `LOAD DATA` never satisfy a read intent: they classify as non-reads where the grammar accepts them and fail closed otherwise, so cloud requests for them are refused. Use the engine's own tooling for server administration.
 - MySQL `EXPLAIN ANALYZE` does not parse under the MySQL grammar and is refused; `EXPLAIN SELECT` is a read.
 - Before every MySQL statement the connector removes `NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES`, and `ANSI` from the session `sql_mode`, so the server and `node-sql-parser` agree on where a string ends. Use backticks for identifiers; escaped quotes are lexed the standard MySQL way.
 - MongoDB is read-only through the connector regardless of the local permission level: no write method and no write pipeline stage is reachable. `distinct` cannot be bounded server-side, so its result is capped after retrieval; `find` and `aggregate` are capped during execution.
@@ -447,8 +466,8 @@ For production deployments on dedicated hosts or cloud VMs, use systemd to manag
    ```
 2. Initialize and configure your database as your service user:
    ```bash
-   db-connector init
-   db-connector db add --url postgresql://app_user@127.0.0.1:5432/app_db --alias app-db --project main --password-stdin
+   sw-connector init
+   sw-connector db add --url postgresql://app_user@127.0.0.1:5432/app_db --alias app-db --project main --password-stdin
    ```
 3. Generate and install the systemd unit file:
    ```bash
@@ -461,7 +480,7 @@ For production deployments on dedicated hosts or cloud VMs, use systemd to manag
 4. Verify status:
    ```bash
    sudo systemctl status schemaweaver
-   db-connector status
+   sw-connector status
    ```
 
 ### 2. Universal Autostart with PM2 (Cross-OS)
@@ -472,8 +491,8 @@ To ensure the connector runs 24/7, survives terminal closure, and restarts on sy
 # Install PM2 if not already installed
 npm install -g pm2
 
-# Start db-connector with auto-restart supervisor
-pm2 start db-connector --name schemaweaver -- start
+# Start sw-connector with auto-restart supervisor
+pm2 start sw-connector --name schemaweaver -- start
 
 # Save process list and enable system boot startup
 pm2 save
@@ -488,7 +507,7 @@ WORKDIR /app
 RUN npm install -g @schema-weaver/pg-connector
 USER node
 ENV HOME=/home/node
-CMD ["db-connector", "start"]
+CMD ["sw-connector", "start"]
 ```
 
 Mount your local configuration directory into `/home/node/.sw-agent`:
@@ -496,7 +515,7 @@ Mount your local configuration directory into `/home/node/.sw-agent`:
 docker run -d \
   --name schemaweaver-connector \
   -v ~/.sw-agent:/home/node/.sw-agent \
-  -e DB_PASSWORD="my-secure-password" \
+  -e SW_AGENT_DB_PASSWORD="my-secure-password" \
   schemaweaver-connector
 ```
 
@@ -509,7 +528,7 @@ The connector is engineered specifically for secure enterprise networks and priv
 - **Zero Ingress Rules (0 Inbound Open Ports)**: The daemon **never** executes `server.listen()`. It opens no ports on the host. Firewalls and AWS Security Groups need **zero inbound rules** (`0.0.0.0:ANY` blocked).
 - **Outbound-Only Over TLS**: Initiates outbound WSS connections on the standard HTTPS port, traversing NAT Gateways without custom port rules. Plaintext `ws://` cloud URLs are refused at startup.
 - **Corporate TLS Inspection**: For forward proxies that intercept TLS, point Node at your organisation's CA with `NODE_EXTRA_CA_CERTS`.
-- **Air-Gapped / 100% Offline Direct Mode**: For strictly isolated networks with no internet egress, the CLI executes queries, tests, and audit verification directly over the local database protocol — PostgreSQL, MySQL, or MongoDB — without external network calls (`db-connector db query <alias> "<sql-or-json>"`).
+- **Air-Gapped / 100% Offline Direct Mode**: For strictly isolated networks with no internet egress, the CLI executes queries, tests, and audit verification directly over the local database protocol — PostgreSQL, MySQL, or MongoDB — without external network calls (`sw-connector db query <alias> "<sql-or-json>"`).
 
 ---
 
@@ -569,7 +588,7 @@ Schema Weaver’s connector architecture applies defense-in-depth security contr
 | **Message Authentication** | Each data-channel envelope carries an HMAC over its canonical form, a per-message nonce, and a timestamp, all bound to a key derived from the session token. | `src/protocol/envelope.ts` · Envelope auth tests |
 | **Telemetry Privacy** | SQL previews and fingerprints are produced by a dialect-aware redactor: PostgreSQL literals and dollar quotes, MySQL backslash escapes and backtick identifiers, and MongoDB JSON values are replaced before anything is transmitted or logged. A construct the lexer cannot fully account for becomes `/* unredactable */`. | `src/audit/redact.ts` · Redaction tests |
 | **Data Retention** | Query results are processed ephemerally in RAM and forwarded to the browser. The connector never writes row data to disk. | `src/execution/query-runner.ts` & `src/drivers/*.ts` · In-memory stream tests |
-| **Tamper-Evident Audit Trail** | Records are chained with HMAC-SHA256 under a locally-held key, carry a monotonic sequence number, and are anchored in a separate head file. Verified on demand. | `src/audit/chain.ts` & `src/audit/local-writer.ts` · `db-connector audit verify` |
+| **Tamper-Evident Audit Trail** | Records are chained with HMAC-SHA256 under a locally-held key, carry a monotonic sequence number, and are anchored in a separate head file. Verified on demand. | `src/audit/chain.ts` & `src/audit/local-writer.ts` · `sw-connector audit verify` |
 
 > [!NOTE]
 > To report a security vulnerability or view disclosure guidelines, see [SECURITY.md](./SECURITY.md).

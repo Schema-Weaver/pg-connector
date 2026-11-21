@@ -1,5 +1,6 @@
 import { askConfirm, closePrompts, isReplMode } from '../prompt';
 import { removeDbEntry, findDbEntry } from '../../config/db-config';
+import { dbTypeOf } from '../../drivers/config-shape';
 import { C, S, check, cross } from '../ui';
 
 function exit_(code: number): never {
@@ -28,6 +29,7 @@ export async function runDbRemove(args: string[]): Promise<void> {
   console.log();
   console.log(`  ${C.bold('Remove database')} ${C.white(alias)}`);
   console.log(`    Project: ${C.white(entry.project_name || '-')}`);
+  console.log(`    Engine:  ${C.magenta(dbTypeOf(entry))}`);
   console.log(`    Host:    ${C.dim(`${entry.host}:${entry.port}`)}`);
   console.log();
 

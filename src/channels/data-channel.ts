@@ -97,8 +97,9 @@ export interface DataChannelOptions {
   /** Optional: abort signal. */
   abortSignal?: AbortSignal;
   /**
-   * Allow a cleartext `ws:`/`http:` target. Only wire this to an explicit,
-   * non-persisted operator flag (`--insecure-transport`).
+   * Allow a non-loopback cleartext `ws:`/`http:` target. Programmatic opt-in
+   * for embedders only; the CLI does not expose a plaintext flag. Loopback
+   * plaintext is accepted automatically with a one-time warning.
    */
   allowInsecureTransport?: boolean;
 }

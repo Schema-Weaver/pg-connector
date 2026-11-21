@@ -95,7 +95,7 @@ export function printBanner(): void {
   for (const line of logoLines(width)) {
     console.log(C.brand(truncateAnsi(line, usable)));
   }
-  console.log(`  ${C.dim(truncateAnsi('Secure bridge between Schema Weaver and PostgreSQL', usable - 2))}`);
+  console.log(`  ${C.dim(truncateAnsi('Secure bridge between Schema Weaver and your databases', usable - 2))}`);
   console.log(`  ${C.dim(`v${VERSION}`)}`);
   console.log();
 
@@ -120,7 +120,7 @@ export function printBanner(): void {
   if (!state.initialized) {
     console.log(`  ${C.cyan(S.arrow)} Run ${C.cyan('init')} to create a local agent token.`);
   } else if (state.dbCount === 0) {
-    console.log(`  ${C.cyan(S.arrow)} Run ${C.cyan('db add')} to register a PostgreSQL database.`);
+    console.log(`  ${C.cyan(S.arrow)} Run ${C.cyan('db add')} to register a database.`);
   } else if (!state.runtime.running) {
     console.log(`  ${C.cyan(S.arrow)} Run ${C.cyan('agent start')} to begin listening.`);
   }

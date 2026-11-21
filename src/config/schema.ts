@@ -97,6 +97,12 @@ export function isValidIdentifier(s: string, maxLen: number): boolean {
 /** URL schemes accepted for transport that carries a bearer token. */
 export type SecureScheme = 'wss:' | 'https:';
 
+/** Schemes a cloud_url may use: wss anywhere, ws only on loopback. */
+export type CloudScheme = 'wss:' | 'ws:';
+
+/** Schemes a telemetry ingest URL may use: https anywhere, http only on loopback. */
+export type IngestScheme = 'https:' | 'http:';
+
 /** Longest cloud/telemetry URL accepted. */
 const MAX_URL_LENGTH = 2048;
 
@@ -109,6 +115,27 @@ function hasControlOrSpace(raw: string): boolean {
 }
 
 /**
+ * True only for a loopback host literal.
+ *
+ * This is the gate that makes plaintext `ws://`/`http://` acceptable for a
+ * local development relay without weakening the rule for anything reachable
+ * over a network. `localhost` is included because that is how a developer
+ * names the loopback interface; `127.0.0.0/8` and IPv6 `::1` are the literal
+ * forms. A hostname that merely *resolves* to loopback is not accepted: DNS
+ * can be changed after validation, so only literals are trusted.
+ */
+export function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.trim().toLowerCase().replace(/\.$/, '');
+  if (host === 'localhost' || host === '::1' || host === '[::1]') return true;
+  const match = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!match) return false;
+  return match.slice(1).every((part) => {
+    const n = Number(part);
+    return Number.isInteger(n) && n >= 0 && n <= 255;
+  });
+}
+
+/**
  * Strictly parses a URL that is required to use `scheme` with an explicit
  * "//" authority separator.
  *
@@ -118,7 +145,10 @@ function hasControlOrSpace(raw: string): boolean {
  * the "wss:" scheme, and "wss:/host" (single slash) is happily parsed as the
  * host. Either one alone would be a bypassable transport check.
  */
-export function parseSecureUrl(raw: unknown, scheme: SecureScheme): URL | null {
+function parseUrlWithScheme(
+  raw: unknown,
+  scheme: SecureScheme | CloudScheme | IngestScheme,
+): URL | null {
   if (typeof raw !== 'string') return null;
   const prefix = `${scheme}//`;
   if (raw.length < prefix.length + 1 || raw.length > MAX_URL_LENGTH) return null;
@@ -141,6 +171,36 @@ export function parseSecureUrl(raw: unknown, scheme: SecureScheme): URL | null {
   return url;
 }
 
+export function parseSecureUrl(raw: unknown, scheme: SecureScheme): URL | null {
+  return parseUrlWithScheme(raw, scheme);
+}
+
+/**
+ * Parse a `cloud_url`.
+ *
+ * TLS is the default and the only thing accepted for a remote host. A plaintext
+ * `ws://` URL is accepted only when its host is a loopback literal, so a local
+ * backend on `ws://localhost:3000` works without a flag while a production
+ * relay still cannot be downgraded.
+ */
+export function parseCloudUrl(raw: unknown): URL | null {
+  const secure = parseUrlWithScheme(raw, 'wss:');
+  if (secure) return secure;
+  const plain = parseUrlWithScheme(raw, 'ws:');
+  return plain && isLoopbackHost(plain.hostname) ? plain : null;
+}
+
+/**
+ * Parse a telemetry ingest URL, with the same loopback-only plaintext exception
+ * as {@link parseCloudUrl}.
+ */
+export function parseIngestUrl(raw: unknown): URL | null {
+  const secure = parseUrlWithScheme(raw, 'https:');
+  if (secure) return secure;
+  const plain = parseUrlWithScheme(raw, 'http:');
+  return plain && isLoopbackHost(plain.hostname) ? plain : null;
+}
+
 /**
  * True only for a wss: URL with an explicit lowercase "//" authority.
  * ws:, http:, WSS: and "wss:/x" are all rejected.
@@ -150,11 +210,25 @@ export function isSecureCloudUrl(raw: unknown): boolean {
 }
 
 /**
+ * True for a wss:// URL, or a ws:// URL whose host is a loopback literal.
+ */
+export function isValidCloudUrl(raw: unknown): boolean {
+  return parseCloudUrl(raw) !== null;
+}
+
+/**
  * True only for an https: URL with an explicit lowercase "//" authority.
  * http: is rejected.
  */
 export function isSecureIngestUrl(raw: unknown): boolean {
   return parseSecureUrl(raw, 'https:') !== null;
+}
+
+/**
+ * True for an https:// URL, or an http:// URL whose host is a loopback literal.
+ */
+export function isValidIngestUrl(raw: unknown): boolean {
+  return parseIngestUrl(raw) !== null;
 }
 
 /**

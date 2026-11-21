@@ -95,7 +95,7 @@ export const UNRECOGNISED_SECURITY_ENV: Readonly<Record<string, string>> = {
   PG_CONNECTOR_HOME: 'relocates the whole agent home, including the permission configuration',
   SW_AGENT_MAX_STREAM_ROWS: 'raises the streaming row ceiling',
   SW_AGENT_AUDIT_BUFFER: 'raises the audit queue depth above the durable write path',
-  SW_PG_POOL_MAX: 'raises the PostgreSQL pool ceiling',
+  SW_PG_POOL_MAX: 'raises the PostgreSQL pool ceiling (PostgreSQL entries only)',
   SW_MAX_STATEMENT_TIMEOUT_MS: 'raises the statement_timeout ceiling',
   SW_AGENT_MANUAL_APPROVAL_TIMEOUT_MS: 'changes how long an unapproved write stays pending',
 };

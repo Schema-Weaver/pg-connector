@@ -9,7 +9,7 @@ import {
   MachineConfig,
   PermissionLevel,
 } from '../../config/machine-config';
-import { isSecureCloudUrl } from '../../config/schema';
+import { isValidCloudUrl } from '../../config/schema';
 import { getMachineConfigPath, getSwAgentDir } from '../../config/paths';
 import { generateAgentToken } from '../../config/token';
 import { ensureAuditDir } from '../../audit/files';
@@ -63,13 +63,15 @@ export async function runInit(_args: string[]): Promise<void> {
   let cloudUrl = '';
   for (;;) {
     cloudUrl = await ask('Cloud URL', 'wss://api.schemaweaver.dev');
-    if (isSecureCloudUrl(cloudUrl.trim())) {
+    if (isValidCloudUrl(cloudUrl.trim())) {
       cloudUrl = cloudUrl.trim();
       break;
     }
-    console.log(`  ${C.red(S.cross)} URL must be wss:// with an explicit authority.`);
     console.log(
-      `  ${C.dim('ws:// and http:// are refused: the agent token is a permanent bearer credential.')}`,
+      `  ${C.red(S.cross)} URL must be wss://, or ws:// on a loopback host (localhost, 127.0.0.1, ::1).`,
+    );
+    console.log(
+      `  ${C.dim('Remote plaintext is refused: the agent token is a permanent bearer credential.')}`,
     );
   }
   console.log(`  ${check(`Cloud URL: ${C.white(cloudUrl)}`)}`);

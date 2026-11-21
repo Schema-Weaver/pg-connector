@@ -1,7 +1,7 @@
 {
   "name": "@schema-weaver/pg-connector",
   "version": "2.0.4",
-  "description": "Bridge between the Schema Weaver browser IDE and your PostgreSQL databases. Runs near the DB, never exposes credentials, executes queries and migrations on demand.",
+  "description": "Bridge between the Schema Weaver browser IDE and your PostgreSQL, MySQL, and MongoDB databases. Runs near the DB, never exposes credentials, executes queries and migrations on demand.",
   "license": "MIT",
   "author": "Schema Weaver <vivek@schemaweaver.dev>",
   "repository": {
@@ -31,6 +31,7 @@
   "types": "./dist/types/index.d.ts",
   "sideEffects": false,
   "bin": {
+    "sw-connector": "./dist/cjs/cli/index.js",
     "schemaweaver": "./dist/cjs/cli/index.js",
     "sw-agent": "./dist/cjs/cli/index.js",
     "pg-connector": "./dist/cjs/cli/index.js",
@@ -69,8 +70,8 @@
     "lint:fix": "eslint \"src/**/*.ts\" --fix",
     "format": "prettier --write 'src/**/*.ts'",
     "typecheck": "tsc --noEmit",
-    "test:guard": "node -e \"const{readdirSync}=require(\\\"node:fs\\\");const{join}=require(\\\"node:path\\\");const roots=process.argv.slice(1);let n=0;const walk=d=>{let es;try{es=readdirSync(d,{withFileTypes:true})}catch{return}for(const e of es){const f=join(d,e.name);if(e.isDirectory())walk(f);else if(/\\\\.(spec|test)\\\\.ts$/.test(e.name))n++}};for(const r of roots)walk(r);if(n>0){console.log(\\\"guard: \\\"+n+\\\" test file(s) under \\\"+roots.join(\\\", \\\"));process.exit(0)};if(process.env.SW_AGENT_ALLOW_EMPTY_SUITE===\\\"1\\\"){console.log(\\\"guard: 0 test files under \\\"+roots.join(\\\", \\\")+\\\" — allowed by SW_AGENT_ALLOW_EMPTY_SUITE=1\\\");process.exit(0)};console.error(\\\"guard: FAILED — 0 test files under \\\"+roots.join(\\\", \\\")+\\\". A zero-test run reports success while proving nothing. Fix the glob or set SW_AGENT_ALLOW_EMPTY_SUITE=1 to allow an intentionally empty suite.\\\");process.exit(1)\"",
-    "pretest": "node -e \"const{readdirSync}=require(\\\"node:fs\\\");const{join}=require(\\\"node:path\\\");const roots=process.argv.slice(1);let n=0;const walk=d=>{let es;try{es=readdirSync(d,{withFileTypes:true})}catch{return}for(const e of es){const f=join(d,e.name);if(e.isDirectory())walk(f);else if(/\\\\.(spec|test)\\\\.ts$/.test(e.name))n++}};for(const r of roots)walk(r);if(n>0){console.log(\\\"guard: \\\"+n+\\\" test file(s) under \\\"+roots.join(\\\", \\\"));process.exit(0)};if(process.env.SW_AGENT_ALLOW_EMPTY_SUITE===\\\"1\\\"){console.log(\\\"guard: 0 test files under \\\"+roots.join(\\\", \\\")+\\\" — allowed by SW_AGENT_ALLOW_EMPTY_SUITE=1\\\");process.exit(0)};console.error(\\\"guard: FAILED — 0 test files under \\\"+roots.join(\\\", \\\")+\\\". A zero-test run reports success while proving nothing. Fix the glob or set SW_AGENT_ALLOW_EMPTY_SUITE=1 to allow an intentionally empty suite.\\\");process.exit(1)\" src/tests",
+    "test:guard": "node -e \"const{readdirSync}=require(\\\"node:fs\\\");const{join}=require(\\\"node:path\\\");const roots=process.argv.slice(1);let n=0;const walk=d=>{let es;try{es=readdirSync(d,{withFileTypes:true})}catch{return}for(const e of es){const f=join(d,e.name);if(e.isDirectory())walk(f);else if(/\\.(spec|test)\\.ts$/.test(e.name))n++}};for(const r of roots)walk(r);if(n>0){console.log(\\\"guard: \\\"+n+\\\" test file(s) under \\\"+roots.join(\\\", \\\"));process.exit(0)};if(process.env.SW_AGENT_ALLOW_EMPTY_SUITE===\\\"1\\\"){console.log(\\\"guard: 0 test files under \\\"+roots.join(\\\", \\\")+\\\" — allowed by SW_AGENT_ALLOW_EMPTY_SUITE=1\\\");process.exit(0)};console.error(\\\"guard: FAILED — 0 test files under \\\"+roots.join(\\\", \\\")+\\\". A zero-test run reports success while proving nothing. Fix the glob or set SW_AGENT_ALLOW_EMPTY_SUITE=1 to allow an intentionally empty suite.\\\");process.exit(1)\"",
+    "pretest": "node -e \"const{readdirSync}=require(\\\"node:fs\\\");const{join}=require(\\\"node:path\\\");const roots=process.argv.slice(1);let n=0;const walk=d=>{let es;try{es=readdirSync(d,{withFileTypes:true})}catch{return}for(const e of es){const f=join(d,e.name);if(e.isDirectory())walk(f);else if(/\\.(spec|test)\\.ts$/.test(e.name))n++}};for(const r of roots)walk(r);if(n>0){console.log(\\\"guard: \\\"+n+\\\" test file(s) under \\\"+roots.join(\\\", \\\"));process.exit(0)};if(process.env.SW_AGENT_ALLOW_EMPTY_SUITE===\\\"1\\\"){console.log(\\\"guard: 0 test files under \\\"+roots.join(\\\", \\\")+\\\" — allowed by SW_AGENT_ALLOW_EMPTY_SUITE=1\\\");process.exit(0)};console.error(\\\"guard: FAILED — 0 test files under \\\"+roots.join(\\\", \\\")+\\\". A zero-test run reports success while proving nothing. Fix the glob or set SW_AGENT_ALLOW_EMPTY_SUITE=1 to allow an intentionally empty suite.\\\");process.exit(1)\" src/tests",
     "test": "node --test --test-concurrency=3 --import tsx \"src/tests/**/*.test.ts\" \"src/tests/**/*.spec.ts\"",
     "test:all": "npm test && npm run test:e2e",
     "postbuild": "node scripts/postbuild.mjs",
@@ -97,8 +98,6 @@
     "test:e2e": "node --test --test-concurrency=1 --import tsx \"src/tests/e2e/**/*.test.ts\" \"src/tests/e2e/**/*.spec.ts\""
   },
   "dependencies": {
-    "@inquirer/core": "^11.2.1",
-    "@inquirer/prompts": "^8.5.2",
     "mongodb": "6.21.0",
     "mysql2": "3.24.6",
     "node-sql-parser": "5.4.0",

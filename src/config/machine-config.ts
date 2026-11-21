@@ -17,8 +17,8 @@ import {
   ConfigError,
   isValidIso8601,
   isValidIdentifier,
-  isSecureCloudUrl,
-  isSecureIngestUrl,
+  isValidCloudUrl,
+  isValidIngestUrl,
 } from './schema';
 
 const CONFIG_FILE_MODE = 0o600;
@@ -30,7 +30,7 @@ const CONFIG_FILE_MODE = 0o600;
  */
 export interface MachineConfig {
   config_version: 1; // schema version, always 1 for now
-  cloud_url: string; // e.g. "wss://api.schemaweaver.dev" (wss: only)
+  cloud_url: string; // e.g. "wss://api.schemaweaver.dev"; ws:// is loopback-only
   agent_token: string; // format: swagt_<32 chars>
   agent_id: string; // format: agt_<label>_<8 hex>
   default_permission: PermissionLevel;
@@ -121,14 +121,16 @@ export function validateMachineConfig(raw: unknown): MachineConfig {
     throw new ConfigInvalidError('Field "config_version" invalid: Must be 1');
   }
 
-  // The agent token is a permanent bearer credential, so the transport that
-  // carries it must be TLS end to end. ws:// and http:// are refused rather
-  // than warned about: there is no way to carry a one-shot opt-in flag through
-  // the detached daemon/service start paths, so an accepted-but-plaintext URL
-  // would produce a config the agent can never load again.
-  if (typeof data.cloud_url !== 'string' || !isSecureCloudUrl(data.cloud_url)) {
+  // The agent token is a permanent bearer credential, so a remote transport
+  // must be TLS end to end. A plaintext ws:// URL is accepted only when the
+  // host is a loopback literal (localhost, 127.0.0.0/8, ::1): that is a local
+  // backend on the same machine, where the token never reaches a network.
+  // Anything else is refused rather than warned about, because the detached
+  // daemon/service start paths must be able to load the config again.
+  if (typeof data.cloud_url !== 'string' || !isValidCloudUrl(data.cloud_url)) {
     throw new ConfigInvalidError(
-      'Field "cloud_url" invalid: Must be a wss:// URL with an explicit authority (ws:// and http:// are not accepted; the agent token would travel in cleartext)',
+      'Field "cloud_url" invalid: Must be a wss:// URL with an explicit authority; ' +
+        'ws:// is accepted only for a loopback host (localhost, 127.0.0.1, or ::1)',
     );
   }
 
@@ -176,9 +178,10 @@ export function validateMachineConfig(raw: unknown): MachineConfig {
       throw new ConfigInvalidError('Field "cloud_telemetry.enabled" invalid: Must be boolean');
     }
     if (t.ingest_url !== undefined && t.ingest_url !== null) {
-      if (typeof t.ingest_url !== 'string' || !isSecureIngestUrl(t.ingest_url)) {
+      if (typeof t.ingest_url !== 'string' || !isValidIngestUrl(t.ingest_url)) {
         throw new ConfigInvalidError(
-          'Field "cloud_telemetry.ingest_url" invalid: Must be an https:// URL with an explicit authority (http:// is not accepted)',
+          'Field "cloud_telemetry.ingest_url" invalid: Must be an https:// URL with an explicit authority; ' +
+            'http:// is accepted only for a loopback host',
         );
       }
     }

@@ -5,8 +5,8 @@ import { parseMongoQuery } from './mongodb-query';
  * Classify a MongoDB command from its JSON payload.
  *
  * Unlike SQL there is no grammar to interpret: the command names its own
- * method, and the method is the classification. `find`, `aggregate`, `count`
- * and `distinct` are reads; every other method is refused by
+ * method, and the method is the classification. `find`, `aggregate`, `count`,
+ * `distinct` and `listCollections` are reads; every other method is refused by
  * {@link parseMongoQuery} before a classification is produced.
  *
  * `function_effects` is always `[]`, never absent. `isProvableRead()` treats an

@@ -14,6 +14,14 @@ function exit_(code: number): never {
 }
 
 export async function runDbShow(args: string[]): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log();
+    console.log(`  ${C.yellow('Usage:')} ${C.white('db show <alias>')} [--json]`);
+    console.log(`  ${C.dim('Shows configuration, engine-specific settings and live status.')}`);
+    console.log();
+    exit_(0);
+  }
+
   const isJson = args.includes('--json') || args.includes('-j');
   const alias = args.find((a) => !a.startsWith('-'));
 
@@ -47,7 +55,7 @@ export async function runDbShow(args: string[]): Promise<void> {
   // Live connectivity check
   let connected = false;
   let latencyMs = 0;
-  let pgVersion = '';
+  let serverVersion = '';
   let connError = '';
 
   const dbType = dbTypeOf(entry);
@@ -62,7 +70,7 @@ export async function runDbShow(args: string[]): Promise<void> {
         connected = true;
         const raw = res.rows[0]?.version || '';
         const match = raw.match(/PostgreSQL [^\s,]+/);
-        pgVersion = match ? match[0] : 'PostgreSQL';
+        serverVersion = match ? match[0] : 'PostgreSQL';
       } finally {
         await pool.end();
       }
@@ -73,7 +81,7 @@ export async function runDbShow(args: string[]): Promise<void> {
         const info = await driver.testConnection(entry);
         latencyMs = Date.now() - start;
         connected = true;
-        pgVersion = info.version;
+        serverVersion = info.version;
       } finally {
         await driver.closeAll().catch(() => undefined);
       }
@@ -120,7 +128,7 @@ export async function runDbShow(args: string[]): Promise<void> {
           created_at: entry.created_at,
           reachable: connected,
           latency_ms: connected ? latencyMs : null,
-          server_version: connected ? pgVersion : null,
+          server_version: connected ? serverVersion : null,
           error: connError || null,
         },
         null,
@@ -138,7 +146,7 @@ export async function runDbShow(args: string[]): Promise<void> {
   console.log();
 
   const statusText = connected
-    ? `${check('Reachable')} ${C.dim(`(${latencyMs}ms, ${pgVersion})`)}`
+    ? `${check('Reachable')} ${C.dim(`(${latencyMs}ms, ${serverVersion})`)}`
     : `${warn('Unreachable')} ${C.dim(`(${truncateAnsi(connError, valueWidth)})`)}`;
 
   const rows = [
@@ -181,8 +189,8 @@ export async function runDbShow(args: string[]): Promise<void> {
   console.log();
   console.log(`  ${C.dim('Quick actions:')}`);
   console.log(`    ${C.cyan(`db test ${entry.db_alias}`)}       Run diagnostics`);
-  console.log(`    ${C.cyan(`db connect ${entry.db_alias}`)}    Interactive SQL console`);
-  console.log(`    ${C.cyan(`db query ${entry.db_alias} "<SQL>"`)} Run single query`);
+  console.log(`    ${C.cyan(`db connect ${entry.db_alias}`)}    Interactive query console`);
+  console.log(`    ${C.cyan(`db query ${entry.db_alias} "<SQL|JSON>"`)} Run single query`);
   console.log(`    ${C.cyan(`db logs ${entry.db_alias}`)}       View audit logs`);
   console.log(`    ${C.cyan(`db edit ${entry.db_alias}`)}       Modify settings`);
   console.log();

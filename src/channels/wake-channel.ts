@@ -60,8 +60,9 @@ export interface WakeChannelOptions {
   /** Optional: consecutive auth failures tolerated before stopping. Default 5. */
   maxAuthFailures?: number;
   /**
-   * Allow a cleartext `http:`/`ws:` target. Only wire this to an explicit,
-   * non-persisted operator flag (`--insecure-transport`).
+   * Allow a non-loopback cleartext `http:`/`ws:` target. Programmatic opt-in
+   * for embedders only; the CLI does not expose a plaintext flag. Loopback
+   * plaintext is accepted automatically with a one-time warning.
    */
   allowInsecureTransport?: boolean;
   /** Clock injection point for replay/freshness checks. Defaults to `Date.now`. */
@@ -512,9 +513,9 @@ export class WakeChannel {
       url.pathname = `${url.pathname.replace(/\/+$/, '')}/api/agent/wake`;
       const targetUrl = url.toString();
 
-      // toHttpUrl() refuses every non-TLS scheme unless the caller explicitly
-      // opted in, so the plain-http branch is reachable only via
-      // --insecure-transport.
+      // toHttpUrl() accepts plaintext only for loopback hosts or an explicit
+      // programmatic opt-in, so the plain-http branch cannot be reached by a
+      // remote relay configured through the CLI.
       const requestLib = url.protocol === 'https:' ? https : http;
 
       const headers: Record<string, string> = {

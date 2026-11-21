@@ -21,7 +21,9 @@ function exit_(code: number): never {
 }
 
 export async function runRestart(args: string[]): Promise<void> {
-  await runStop(args);
+  // `runStop()` exits on success by default for the direct `agent stop` path.
+  // Restart must stay in the same process so it can start the daemon again.
+  await runStop(args, { exitOnSuccess: false });
   await runStart(args);
 }
 

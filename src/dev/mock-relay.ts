@@ -41,7 +41,9 @@ export async function startMockRelay(opts: MockRelayOptions = {}): Promise<MockR
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
     
-    if (url.pathname === '/agent/wake') {
+    // The agent builds `/api/agent/wake`; accept the legacy `/agent/wake` alias
+    // so existing tests and older clients keep working.
+    if (url.pathname === '/api/agent/wake' || url.pathname === '/agent/wake') {
       const auth = req.headers.authorization;
       const token = auth && auth.startsWith('Bearer ') ? auth.substring(7) : null;
       
@@ -88,7 +90,8 @@ export async function startMockRelay(opts: MockRelayOptions = {}): Promise<MockR
 
   server.on('upgrade', (request, socket, head) => {
     const url = new URL(request.url || '', `http://${request.headers.host || 'localhost'}`);
-    if (url.pathname === '/agent/data') {
+    // Match the agent's `/api/agent/data` path and the legacy test path.
+    if (url.pathname === '/api/agent/data' || url.pathname === '/agent/data') {
       const token = url.searchParams.get('token') || '';
       
       const isAuthorized = !rejectAuth && (validTokens.length === 0 || validTokens.includes(token));

@@ -150,7 +150,7 @@ export async function runDebug(args: string[] = []): Promise<void> {
       );
     }
   } else {
-    console.log(`     Relay Endpoint : ${C.dim('Not initialized (run pg-connector init)')}`);
+    console.log(`     Relay Endpoint : ${C.dim('Not initialized (run sw-connector init)')}`);
   }
   console.log();
 

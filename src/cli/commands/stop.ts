@@ -14,18 +14,30 @@ function exit_(code: number): never {
 export interface StopOptions {
   force?: boolean;
   timeoutMs?: number;
+  /**
+   * Stop the process after a successful stop. `agent restart` sets this to
+   * false so it can continue into `runStart()`; direct `agent stop` keeps the
+   * normal exit behaviour.
+   */
+  exitOnSuccess?: boolean;
+}
+
+function finishSuccess(exitOnSuccess: boolean): void {
+  if (exitOnSuccess) exit_(0);
 }
 
 export async function runStop(args: string[], opts: StopOptions = {}): Promise<void> {
   const force = opts.force || args.includes('--force') || args.includes('-f');
   const timeoutMs = opts.timeoutMs ?? 30_000;
+  const exitOnSuccess = opts.exitOnSuccess !== false;
 
   const pidFile = getPidFilePath();
 
   const pidInfo = await readPidFile({ path: pidFile });
   if (!pidInfo) {
     console.log(`  ${C.yellow(S.warning)} No agent running (no PID file found)`);
-    exit_(0);
+    finishSuccess(exitOnSuccess);
+    return;
   }
 
   const { pid, started_at, version } = pidInfo;
@@ -33,7 +45,8 @@ export async function runStop(args: string[], opts: StopOptions = {}): Promise<v
   if (!isProcessAlive(pid)) {
     console.log(`  ${C.yellow(S.warning)} Agent (pid ${pid}) is not running. Cleaning up stale PID file.`);
     await deletePidFile({ path: pidFile });
-    exit_(0);
+    finishSuccess(exitOnSuccess);
+    return;
   }
 
   console.log();
@@ -108,5 +121,5 @@ export async function runStop(args: string[], opts: StopOptions = {}): Promise<v
     console.log(`  ${C.yellow(S.warning)} PID file removed, but process may still be exiting.`);
   }
   console.log();
-  exit_(0);
+  finishSuccess(exitOnSuccess);
 }

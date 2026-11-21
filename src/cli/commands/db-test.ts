@@ -342,6 +342,14 @@ function createAttemptContext(): AttemptContext {
 }
 
 export async function runDbTest(args: string[]): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log();
+    console.log(`  ${C.yellow('Usage:')} ${C.white('db test <alias>')} [--detailed] [--json]`);
+    console.log(`  ${C.dim('--all tests every configured database.')}`);
+    console.log();
+    exit_(0);
+  }
+
   const testAll = args.includes('--all');
   const detailed = args.includes('--detailed') || args.includes('-d') || args.includes('--verbose');
   const isJson = args.includes('--json') || args.includes('-j');
@@ -449,7 +457,9 @@ export async function runDbTest(args: string[]): Promise<void> {
   const result = await testOne(entry, detailed, ctx);
 
   if (isJson) {
-    console.log(JSON.stringify(result, null, 2));
+    console.log(
+      JSON.stringify({ db_type: dbTypeOf(entry), ...result }, null, 2),
+    );
     exit_(result.ok ? 0 : 1);
   }
 
@@ -462,8 +472,12 @@ export async function runDbTest(args: string[]): Promise<void> {
     console.log(
       `    ${C.bold('SSL Mode:')}   ${entry.ssl_mode === 'disable' ? C.dim('disabled') : C.yellow(entry.ssl_mode)}`,
     );
+    const probePosture =
+      dbTypeOf(entry) === 'postgres'
+        ? '(connection probes run read-only)'
+        : '(probe uses the engine driver)';
     console.log(
-      `    ${C.bold('Permission:')} ${C.white(result.permission_level ?? localPermissionLevelFor(entry))}  ${C.dim('(connection probes run read-only)')}`,
+      `    ${C.bold('Permission:')} ${C.white(result.permission_level ?? localPermissionLevelFor(entry))}  ${C.dim(probePosture)}`,
     );
     if (result.probeNote) {
       console.log(`    ${C.bold('Note:')}       ${C.yellow(result.probeNote)}`);
@@ -482,10 +496,15 @@ export async function runDbTest(args: string[]): Promise<void> {
       console.log(
         `    ${C.bold('Schemas:')}    ${C.white(result.diagnostics.schemas.join(', ') || 'none')}`,
       );
-    } else {
+    } else if (dbTypeOf(entry) === 'postgres') {
       console.log();
       console.log(
         `  ${C.dim('Tip: Run')} ${C.cyan(`db test ${alias} --detailed`)} ${C.dim('for schema & encoding diagnostics.')}`,
+      );
+    } else {
+      console.log();
+      console.log(
+        `  ${C.dim(`Detailed diagnostics are PostgreSQL-only; ${dbTypeOf(entry)} connectivity was verified.`)}`,
       );
     }
     console.log();

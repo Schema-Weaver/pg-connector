@@ -1,10 +1,11 @@
 import * as fs from 'fs';
 import { MachineConfig } from '../../config/machine-config';
 import { DatabasesConfig, loadDatabasesConfig } from '../../config/db-config';
+import { toReportedDatabases } from '../../config/db-metadata';
 import { getDbConfigPath, getDaemonLogPath, AGENT_HOME_ENV_VARS } from '../../config/paths';
 import {
   ConfigInvalidError,
-  isSecureCloudUrl,
+  isValidCloudUrl,
   isValidIdentifier,
   redactSecrets,
 } from '../../config/schema';
@@ -192,10 +193,11 @@ export interface RelayResolution {
 }
 
 /**
- * Validate a relay URL with exactly the rule `cloud_url` must already satisfy
- * in `validateMachineConfig`: a well-formed `wss://` URL with an explicit
- * authority and no userinfo. `ws://`, `http://`, `WSS://`, `wss:/host` and
- * unparseable input are all refused.
+ * Validate a relay URL with the rule `cloud_url` must satisfy in
+ * `validateMachineConfig`: a well-formed `wss://` URL with an explicit
+ * authority and no userinfo, or `ws://` when the host is a loopback literal.
+ * `http://` (as a websocket target), `WSS://`, `wss:/host` and unparseable
+ * input are refused.
  *
  * Throws {@link ConfigInvalidError} rather than falling back to the configured
  * URL: silently ignoring the flag would leave the operator believing the agent
@@ -204,14 +206,16 @@ export interface RelayResolution {
 export function assertSecureRelayUrl(raw: string): string {
   if (typeof raw !== 'string' || raw.trim().length === 0) {
     throw new ConfigInvalidError(
-      'Relay URL is empty. Expected a wss:// URL with an explicit authority.',
+      'Relay URL is empty. Expected a wss:// URL with an explicit authority, ' +
+        'or ws:// on a loopback host.',
     );
   }
-  if (!isSecureCloudUrl(raw)) {
+  if (!isValidCloudUrl(raw)) {
     throw new ConfigInvalidError(
-      'Refusing relay URL: it must be a wss:// URL with an explicit authority. ' +
-        'ws:// and http:// are refused because the agent token is a permanent ' +
-        'bearer credential and would travel in cleartext.',
+      'Refusing relay URL: it must be a wss:// URL with an explicit authority, ' +
+        'or ws:// on a loopback host (localhost, 127.0.0.1, or ::1). ' +
+        'Plaintext to a remote host is refused because the agent token is a ' +
+        'permanent bearer credential and would travel in cleartext.',
     );
   }
   return raw;
@@ -1096,7 +1100,7 @@ export async function runAgent(opts: RuntimeOptions): Promise<number> {
     );
     console.error(
       '  Reinstall the package so node_modules/pgsql-parser and its libpg-query WASM binary ' +
-        'are intact, then run `sw-agent doctor` and `sw-agent start` again.',
+        'are intact, then run `sw-connector doctor` and `sw-connector agent start` again.',
     );
     console.error(`  Agent log: ${getDaemonLogPath()}`);
     console.error();
@@ -1299,11 +1303,9 @@ export async function runAgent(opts: RuntimeOptions): Promise<number> {
 
   session = new AgentSession({
     machineConfig: opts.machineConfig,
-    getDatabases: () =>
-      currentDatabasesConfig.databases.map((db) => ({
-        db_alias: db.db_alias,
-        database: db.database,
-      })),
+    // The relay needs db_type to route each alias to the right engine adapter.
+    // Sending only alias/database makes every alias look like PostgreSQL.
+    getDatabases: () => toReportedDatabases(currentDatabasesConfig.databases),
     onMessage: async (msg) => {
       try {
         await dispatcher.handle(msg);

@@ -23,7 +23,7 @@ import { machineConfigExists, loadMachineConfig } from '../../config/machine-con
 import { getSwAgentDir } from '../../config/paths';
 import { isReplMode } from '../prompt';
 import { C, S, renderTable, clearScreen, createSpinner, terminalWidth, truncateAnsi } from '../ui';
-import { dbTypeOf } from '../../drivers/config-shape';
+import { dbTypeOf, type DbType } from '../../drivers/config-shape';
 import { createDriverForEntry } from '../../drivers/factory';
 import { classifyMysqlStatement } from '../../drivers/mysql-classifier';
 import { classifyMongoStatement } from '../../drivers/mongodb-classifier';
@@ -788,15 +788,39 @@ export function createDbPool(entry: DbEntry): Pool {
 /* Commands                                                            */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The REPL splits input on whitespace, so a quoted SQL argument arrives with
+ * its surrounding quotes still attached. Shell invocation does not have this
+ * problem, but the REPL does. Remove exactly one matching outer quote pair;
+ * quotes inside the SQL are left untouched.
+ */
+export function stripQueryQuotes(value: string): string {
+  if (value.length < 2) return value;
+  const first = value[0];
+  const last = value[value.length - 1];
+  if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+    return value.slice(1, -1).trim();
+  }
+  return value;
+}
+
 export async function runDbQuery(args: string[]): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log();
+    console.log(`  ${C.yellow('Usage:')} ${C.white('db query <alias> "<SQL|JSON>"')} [--json]`);
+    console.log(`  ${C.dim('SQL for PostgreSQL/MySQL; JSON commands for MongoDB.')}`);
+    console.log();
+    exit_(0);
+  }
+
   const isJson = args.includes('--json') || args.includes('-j');
   const cleanArgs = args.filter((a) => a !== '--json' && a !== '-j');
 
   const alias = cleanArgs[0];
-  const sql = cleanArgs.slice(1).join(' ').trim();
+  const sql = stripQueryQuotes(cleanArgs.slice(1).join(' ').trim());
 
   if (!alias) {
-    console.log(`  ${C.yellow('Usage:')} ${C.white('db query <alias> "<SQL>"\n')}`);
+    console.log(`  ${C.yellow('Usage:')} ${C.white('db query <alias> "<SQL|JSON>"\n')}`);
     exit_(1);
   }
 
@@ -850,7 +874,7 @@ export async function runDbQuery(args: string[]): Promise<void> {
       /statement timeout|canceling statement due to statement timeout/i.test(errMessage(err))
     ) {
       console.log(
-        `  ${C.red(S.cross)} Query exceeded the ${LOCAL_STATEMENT_TIMEOUT_MS}ms local statement timeout and was cancelled by PostgreSQL.`,
+        `  ${C.red(S.cross)} Query exceeded the ${LOCAL_STATEMENT_TIMEOUT_MS}ms local statement timeout and was cancelled by ${dbTypeOf(entry)}.`,
       );
     } else {
       console.log(`  ${C.red(S.cross)} Query error: ${C.red(errMessage(err))}`);
@@ -918,6 +942,46 @@ function inferFieldNames(rows: LocalRow[]): string[] {
   return rows.length > 0 ? ['value'] : [];
 }
 
+interface ConsoleShortcut {
+  input: string;
+  label: string;
+}
+
+/** Console hints must describe the engine the entry actually talks to. */
+function consoleShortcutsFor(type: DbType): ConsoleShortcut[] {
+  switch (type) {
+    case 'mysql':
+      return [
+        { input: 'SHOW TABLES', label: 'List tables' },
+        { input: 'SHOW DATABASES', label: 'List databases' },
+      ];
+    case 'mongodb':
+      return [
+        {
+          input: '{"collection":"users","method":"find"}',
+          label: 'Find documents (JSON command)',
+        },
+      ];
+    case 'postgres':
+    default:
+      return [
+        { input: '\\dt', label: 'List tables' },
+        { input: '\\dn', label: 'List schemas' },
+        { input: '\\l', label: 'List databases' },
+      ];
+  }
+}
+
+function consoleIntroFor(type: DbType): string {
+  if (type === 'mongodb') {
+    return 'Type a MongoDB JSON command (find, aggregate, count or distinct) to run it.';
+  }
+  if (type === 'mysql') {
+    return 'Type SQL to run. SHOW TABLES and SHOW DATABASES are ready to use.';
+  }
+  return 'Type SQL to run, or use the shortcuts below.';
+}
+
 export async function runDbConnect(args: string[]): Promise<void> {
   const alias = args[0];
   if (!alias) {
@@ -933,9 +997,10 @@ export async function runDbConnect(args: string[]): Promise<void> {
   }
 
   const deps = createLocalSqlDeps(entry);
+  const dbType = dbTypeOf(entry);
   console.log();
   console.log(
-    `  ${C.bold('Database Console')}  ${C.dim(`[permission ${deps.permissionLevel}, actor ${LOCAL_OPERATOR_ID}]`)}`,
+    `  ${C.bold('Interactive Query Console')}  ${C.dim(`[${dbType}, permission ${deps.permissionLevel}, actor ${LOCAL_OPERATOR_ID}]`)}`,
   );
   console.log(
     `  ${C.dim(`Host:`)} ${C.white(entry.host)}:${C.white(String(entry.port))}  ${C.dim('DB:')} ${C.white(entry.database)}  ${C.dim('User:')} ${C.white(entry.user)}`,
@@ -943,15 +1008,13 @@ export async function runDbConnect(args: string[]): Promise<void> {
   console.log(
     `  ${C.dim('Every statement is classified, permission-checked, timed out, row-capped, and audited.')}`,
   );
-  console.log(
-    `  ${C.dim('Type SQL to run, or')} ${C.cyan('\\dt')} ${C.dim('(tables),')} ${C.cyan('\\dn')} ${C.dim('(schemas),')} ${C.cyan('\\l')} ${C.dim('(databases),')} ${C.cyan('exit')} ${C.dim('to quit.')}`,
-  );
+  console.log(`  ${C.dim(consoleIntroFor(dbType))}`);
   console.log();
 
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: `sw-agent (${C.cyan(alias)}) > `,
+    prompt: `sw-connector (${C.cyan(alias)}) > `,
   });
 
   rl.prompt();
@@ -976,11 +1039,11 @@ export async function runDbConnect(args: string[]): Promise<void> {
     if (input === 'help' || input === '\\?') {
       console.log();
       console.log(`  ${C.bold('Console Commands:')}`);
-      console.log(`    ${C.cyan('\\dt')}          List tables`);
-      console.log(`    ${C.cyan('\\dn')}          List schemas`);
-      console.log(`    ${C.cyan('\\l')}           List databases`);
+      for (const shortcut of consoleShortcutsFor(dbType)) {
+        console.log(`    ${C.cyan(shortcut.input)}  ${C.dim(shortcut.label)}`);
+      }
       console.log(`    ${C.cyan('clear')}        Clear console screen`);
-      console.log(`    ${C.cyan('exit')}         Quit database console`);
+      console.log(`    ${C.cyan('exit')}         Quit query console`);
       console.log();
       console.log(
         `  ${C.dim('Every statement is recorded to')} ${C.cyan('~/.sw-agent/audit/audit.jsonl')} ${C.dim(`as ${LOCAL_OPERATOR_ID}.`)}`,
@@ -990,7 +1053,7 @@ export async function runDbConnect(args: string[]): Promise<void> {
       continue;
     }
 
-    const sql = expandConsoleCommand(input);
+    const sql = expandConsoleCommand(input, dbType);
 
     const t0 = Date.now();
     try {
@@ -1038,7 +1101,10 @@ export async function runDbConnect(args: string[]): Promise<void> {
   exit_(0);
 }
 
-function expandConsoleCommand(input: string): string {
+function expandConsoleCommand(input: string, type: DbType): string {
+  if (type !== 'postgres') {
+    return input;
+  }
   switch (input) {
     case '\\dt':
       return `

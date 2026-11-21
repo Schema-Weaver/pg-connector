@@ -1,11 +1,12 @@
 /**
  * MongoDB driver.
  *
- * The execution layer implements exactly four read methods — `find`,
- * `aggregate`, `count`, `distinct` — and nothing else. There is deliberately no
- * `db.command()` passthrough and no generic collection method dispatch: a
- * passthrough would make every server-side operator reachable and turn the
- * classifier into decoration.
+ * The execution layer implements exactly five read methods — `find`,
+ * `aggregate`, `count`, `distinct` and the database-scoped `listCollections` —
+ * and nothing else. `listCollections` returns `{ name, type }` metadata with
+ * `nameOnly: true`; there is deliberately no `db.command()` passthrough and no
+ * generic collection method dispatch, since a passthrough would make every
+ * server-side operator reachable and turn the classifier into decoration.
  *
  * The read-only posture is enforced in three places:
  *
@@ -172,6 +173,13 @@ function limitOption(query: MongoQuery, cap: number): number | undefined {
   return Math.min(requested, cap);
 }
 
+function requireCollection(query: MongoQuery): string {
+  if (query.collection === undefined) {
+    throw new Error(`Method "${query.method}" requires a collection`);
+  }
+  return query.collection;
+}
+
 export class MongoDriver implements DatabaseDriver {
   readonly type = 'mongodb' as const;
   readonly display_name = 'MongoDB';
@@ -220,7 +228,45 @@ export class MongoDriver implements DatabaseDriver {
     const query = parseMongoQuery(payload.sql);
     const maxTimeMS = mongoTimeout(payload.timeout_ms);
     const startedAt = Date.now();
-    const collection = this.collectionFor(ctx.dbEntry, query.collection);
+
+    if (query.method === 'listCollections') {
+      const cursor = this.clientFor(ctx.dbEntry)
+        .db(ctx.dbEntry.database)
+        .listCollections(
+          {},
+          {
+            nameOnly: true,
+            maxTimeMS,
+            ...(query.options.batchSize !== undefined
+              ? { batchSize: query.options.batchSize as number }
+              : {}),
+          },
+        );
+      const rows: unknown[][] = [];
+      try {
+        for await (const info of cursor) {
+          if (rows.length >= MAX_QUERY_ROWS) {
+            throw new QueryTooLargeError(
+              `Query result exceeds the maximum of ${MAX_QUERY_ROWS} rows. ` +
+                'Use stream_query for large result sets.',
+            );
+          }
+          rows.push(documentRow(info));
+        }
+      } finally {
+        await cursor.close().catch(() => undefined);
+      }
+
+      return {
+        columns: [{ name: 'document', type_oid: 0, type_name: 'json' }],
+        rows,
+        rows_affected: rows.length,
+        ms: Date.now() - startedAt,
+        truncated: false,
+      };
+    }
+
+    const collection = this.collectionFor(ctx.dbEntry, requireCollection(query));
 
     if (query.method === 'count') {
       // countDocuments returns a number, so there is nothing to buffer. A
@@ -302,9 +348,14 @@ export class MongoDriver implements DatabaseDriver {
     requireClassification(ctx.classification);
     requireNoBindParameters(payload.params);
     const query = parseMongoQuery(payload.sql);
+    if (query.method === 'listCollections') {
+      throw new Error(
+        'listCollections is only supported on query; use query to list collections.',
+      );
+    }
     const maxTimeMS = mongoTimeout(payload.timeout_ms);
     const startedAt = Date.now();
-    const collection = this.collectionFor(ctx.dbEntry, query.collection);
+    const collection = this.collectionFor(ctx.dbEntry, requireCollection(query));
 
     let chunkIndex = 0;
     let totalRows = 0;

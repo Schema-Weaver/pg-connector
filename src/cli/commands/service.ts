@@ -518,7 +518,7 @@ export async function startService(platform: NodeJS.Platform): Promise<void> {
     }
   } else {
     console.log(
-      `  ${C.dim('Use pg-connector agent start or PM2 for foreground/background execution.')}`,
+      `  ${C.dim('Use sw-connector agent start or PM2 for foreground/background execution.')}`,
     );
   }
 }
@@ -555,7 +555,7 @@ function showPm2Instructions(): void {
   console.log(`     ${C.cyan('npm install -g pm2')}`);
   console.log();
   console.log(`  2. Start connector with crash-restart supervisor:`);
-  console.log(`     ${C.cyan('pm2 start pg-connector --name schemaweaver -- start')}`);
+  console.log(`     ${C.cyan('pm2 start sw-connector --name schemaweaver -- start')}`);
   console.log();
   console.log(`  3. Save and configure autostart on system boot:`);
   console.log(`     ${C.cyan('pm2 save')}`);
@@ -566,7 +566,7 @@ function showPm2Instructions(): void {
 }
 
 function showServiceHelp(): void {
-  console.log(`  ${C.bold('Usage:')} pg-connector service ${C.cyan('<action>')}`);
+  console.log(`  ${C.bold('Usage:')} sw-connector service ${C.cyan('<action>')}`);
   console.log();
   console.log(`  ${C.bold('Actions:')}`);
   console.log(
