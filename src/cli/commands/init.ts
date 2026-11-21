@@ -33,7 +33,7 @@ export async function runInit(_args: string[]): Promise<void> {
   }
 
   console.log();
-  console.log(C.bold(C.brand('  Schema Weaver Agent — First Time Setup')));
+  console.log(C.bold(C.brand('  Schema Weaver SW Connector — First Time Setup')));
   console.log(separator('', 50));
   console.log();
 

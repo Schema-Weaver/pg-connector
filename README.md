@@ -1,4 +1,4 @@
-# @schema-weaver/pg-connector · `sw-connector`
+# SW Connector · `@schema-weaver/pg-connector`
 
 > **Secure Multi-Database Connector for Schema Weaver with Local Credential Boundary (LCB) and Connector-Enforced Read-Only Execution (CERO).**
 > Connects local or VPC-hosted PostgreSQL, MySQL, and MongoDB databases to Schema Weaver. Database credentials never leave your environment.
@@ -11,9 +11,9 @@
 
 ---
 
-## What is `@schema-weaver/pg-connector`?
+## What is SW Connector?
 
-`@schema-weaver/pg-connector` (executable as `sw-connector`, `db-connector`, `pg-connector`, `sw-agent`, or `schemaweaver`) is a lightweight on-premises daemon and client library that links customer PostgreSQL, MySQL, and MongoDB databases with the [Schema Weaver](https://schemaweaver.dev) web platform (Data Explorer, SQL Editor, and Schema Migration Engine). `sw-connector` is the canonical binary name; the npm package keeps its original name so existing installs and upgrade paths are unchanged.
+SW Connector (`@schema-weaver/pg-connector`, executable as `sw-connector`, `db-connector`, `pg-connector`, `sw-agent`, or `schemaweaver`) is a lightweight on-premises daemon and client library that links customer PostgreSQL, MySQL, and MongoDB databases with the [Schema Weaver](https://schemaweaver.dev) web platform (Data Explorer, SQL Editor, and Schema Migration Engine). `sw-connector` is the canonical binary name; the npm package keeps its original name so existing installs and upgrade paths are unchanged.
 
 Unlike standard database connection proxies that store customer passwords and connection strings in cloud vaults, the Schema Weaver connector operates as a **customer-side execution and security boundary**.
 
@@ -33,7 +33,7 @@ Unlike standard database connection proxies that store customer passwords and co
                           │ (SSE Control + WSS Data)
                           ▼
              ┌────────────────────────────┐
-             │ @schema-weaver/pg-connector│
+             │      SW Connector      │
              │  (Runs in Customer VPC)    │
              │                            │
              │  [LCB] Credentials Local   │
@@ -99,7 +99,7 @@ Initialize machine configuration and generate your connector token:
 sw-connector init
 ```
 ```text
-  Schema Weaver Agent — First Time Setup
+  Schema Weaver SW Connector — First Time Setup
   ──────────────────────────────────────────────────
   ✔ Machine label: production-bastion
   ✔ Cloud URL: wss://api.schemaweaver.dev
@@ -305,7 +305,7 @@ sw-connector start --daemon
 sw-connector status
 ```
 ```text
-  Schema Weaver Agent — Status
+  Schema Weaver SW Connector — Status
   ──────────────────────────────────────────────────
   Process:           running (PID 4821)
   Uptime:            4h 12m 35s
@@ -595,7 +595,7 @@ Schema Weaver’s connector architecture applies defense-in-depth security contr
 
 ### Local File Permissions
 
-All files created by `@schema-weaver/pg-connector` reside in `~/.sw-agent/`, which is created with POSIX `0o700`, and are written `0o600` (read/write by the owner only):
+All files created by SW Connector (`@schema-weaver/pg-connector`) reside in `~/.sw-agent/`, which is created with POSIX `0o700`, and are written `0o600` (read/write by the owner only):
 
 - `sw-agent.config.json` — Machine label, Agent ID, Cloud URL, permission level.
 - `databases.config.json` — Local database configurations, user names, and encrypted passwords.

@@ -95,7 +95,7 @@ export function printBanner(): void {
   for (const line of logoLines(width)) {
     console.log(C.brand(truncateAnsi(line, usable)));
   }
-  console.log(`  ${C.dim(truncateAnsi('Secure bridge between Schema Weaver and your databases', usable - 2))}`);
+  console.log(`  ${C.dim(truncateAnsi('SW Connector — secure bridge between Schema Weaver and your databases', usable - 2))}`);
   console.log(`  ${C.dim(`v${VERSION}`)}`);
   console.log();
 

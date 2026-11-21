@@ -8,10 +8,10 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in `@schema-weaver/pg-connector`, please report it responsibly:
+If you discover a security vulnerability in SW Connector (`@schema-weaver/pg-connector`), please report it responsibly:
 
 - **Email**: security@schemaweaver.dev
-- **GitHub Advisories**: <https://github.com/Schema-Weaver/pg-connector/security/advisories/new>
+- **GitHub Advisories**: <https://github.com/Schema-Weaver/sw-connector/security/advisories/new>
 
 Please include:
 - A description of the vulnerability

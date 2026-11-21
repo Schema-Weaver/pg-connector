@@ -6,11 +6,11 @@
   "author": "Schema Weaver <vivek@schemaweaver.dev>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Schema-Weaver/pg-connector.git"
+    "url": "git+https://github.com/Schema-Weaver/sw-connector.git"
   },
   "homepage": "https://schemaweaver.dev",
   "bugs": {
-    "url": "https://github.com/Schema-Weaver/pg-connector/issues"
+    "url": "https://github.com/Schema-Weaver/sw-connector/issues"
   },
   "keywords": [
     "postgresql",

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `@schema-weaver/pg-connector` are documented in this file.
+All notable changes to SW Connector (`@schema-weaver/pg-connector`) are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **MySQL Data Explorer Support**: PostgreSQL and MySQL now share a capability-aware relay and grid experience, including introspection, filters, cursor pagination, table metadata, and CSV/XLSX export.
 - **`sw-connector` Binary**: `sw-connector` is the canonical command. Existing `db-connector`, `pg-connector`, `sw-agent`, and `schemaweaver` aliases remain available.
+- **Repository Rename**: The public repository is now `Schema-Weaver/sw-connector`. Documentation and in-product links use the new URL; the npm package name is unchanged for install compatibility.
 - **Full-Screen Add Wizard**: Interactive terminals get a keyboard/mouse wizard covering engine, URL, authentication, TLS, permissions, alias, and project. Piped input and `SW_AGENT_NO_TUI=1` keep the compact prompt flow.
 
 ### Changed
@@ -62,14 +63,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Connector-Enforced Read-Only Execution (CERO)**: Local AST-based SQL classification and parsing via PostgreSQL's parser (`libpg_query`), enforcing read-only guarantees and role capabilities independent of cloud claims.
 - **Outbound-Only Networking**: Initiates outbound TLS connections (SSE wake channel + WSS data streaming) to the Schema Weaver Cloud Relay with zero open inbound ports.
 - **Role-Based Access Control (RBAC)**: Fine-grained permission model (`read_only`, `auto_upgrade`, `manual`, `full`) across roles (`admin`, `developer`, `data_reader`, `viewer`).
-- **Cryptographic Audit Log**: Tamper-evident monotonic HMAC-SHA256 hash-chained local audit log (`audit.jsonl`) with anchored head, verifiable via `pg-connector audit verify`.
+- **Cryptographic Audit Log**: Tamper-evident monotonic HMAC-SHA256 hash-chained local audit log (`audit.jsonl`) with anchored head, verifiable via `sw-connector audit verify`.
 - **Transient Data Streaming**: Ephemeral in-memory streaming of query results directly to the browser session over TLS WebSockets with zero disk caching or cloud persistence.
-- **CLI Suite**: Full command-line interface (`pg-connector` / `sw-agent` / `schemaweaver`) with interactive REPL, database management (`db add`, `db list`, `db test`, `db query`, `db connect`), daemon lifecycle (`start`, `stop`, `status`), and diagnostic tools (`doctor`, `debug`).
+- **CLI Suite**: Full command-line interface (`sw-connector` / `sw-agent` / `pg-connector` / `schemaweaver`) with interactive REPL, database management (`db add`, `db list`, `db test`, `db query`, `db connect`), daemon lifecycle (`start`, `stop`, `status`), and diagnostic tools (`doctor`, `debug`).
 - **Programmatic SDK**: Fully typed Node.js/TypeScript exports for `PoolManager`, `QueryRunner`, `MigrationRunner`, `AgentSession`, and `Dispatcher`.
 
-[2.0.5]: https://github.com/Schema-Weaver/pg-connector/compare/v2.0.4...v2.0.5
-[2.0.4]: https://github.com/Schema-Weaver/pg-connector/compare/v2.0.3...v2.0.4
-[2.0.3]: https://github.com/Schema-Weaver/pg-connector/compare/v2.0.2...v2.0.3
-[2.0.2]: https://github.com/Schema-Weaver/pg-connector/compare/v2.0.1...v2.0.2
-[2.0.1]: https://github.com/Schema-Weaver/pg-connector/compare/v2.0.0...v2.0.1
-[2.0.0]: https://github.com/Schema-Weaver/pg-connector/releases/tag/v2.0.0
+[2.0.5]: https://github.com/Schema-Weaver/sw-connector/compare/v2.0.4...v2.0.5
+[2.0.4]: https://github.com/Schema-Weaver/sw-connector/compare/v2.0.3...v2.0.4
+[2.0.3]: https://github.com/Schema-Weaver/sw-connector/compare/v2.0.2...v2.0.3
+[2.0.2]: https://github.com/Schema-Weaver/sw-connector/compare/v2.0.1...v2.0.2
+[2.0.1]: https://github.com/Schema-Weaver/sw-connector/compare/v2.0.0...v2.0.1
+[2.0.0]: https://github.com/Schema-Weaver/sw-connector/releases/tag/v2.0.0
